@@ -5,6 +5,8 @@ import type {
   JiraTransition,
   JiraUser,
   JiraSprint,
+  JiraBoard,
+  JiraIssueType,
   AdfDoc,
 } from "./types.ts";
 import { getJiraPat } from "./config.ts";
@@ -56,7 +58,7 @@ async function req<T>(
 
 const ISSUE_FIELDS = [
   "summary", "issuetype", "status", "assignee", "reporter", "priority",
-  "created", "updated", "description", "timetracking",
+  "created", "updated", "description", "timetracking", "parent",
   "customfield_10020", // sprint
 ];
 
@@ -165,7 +167,7 @@ export async function getIssueIdsByKeys(config: Config, keys: string[]): Promise
 export async function searchIssues(
   config: Config,
   jql: string,
-  maxResults = 5000
+  maxResults = 500
 ): Promise<JiraIssue[]> {
   const pageSize = 100;
   const all: JiraIssue[] = [];
@@ -189,15 +191,66 @@ export async function searchIssues(
 
 /** Extract sprint from issue fields (customfield_10020 is the standard sprint field) */
 export function extractSprint(issue: JiraIssue): { id: number } | null {
-  const raw = issue.fields["customfield_10020"];
+  const raw = issue.fields.customfield_10020;
   if (!raw) return null;
   // Can be an array of sprints or a single sprint object
   if (Array.isArray(raw) && raw.length > 0) {
-    const s = raw[raw.length - 1] as { id: number };
-    return s;
+    return raw[raw.length - 1] as { id: number };
   }
   if (typeof raw === "object" && raw !== null && "id" in raw) {
     return raw as { id: number };
   }
   return null;
+}
+
+export async function getIssueTypes(config: Config): Promise<JiraIssueType[]> {
+  return req<JiraIssueType[]>(config, "GET", "/rest/api/3/issuetype");
+}
+
+export async function getProjectStatuses(config: Config, projectKey: string): Promise<string[]> {
+  // Returns unique status names available in the project
+  const data = await req<Array<{ statuses: Array<{ name: string }> }>>(
+    config, "GET", `/rest/api/3/project/${encodeURIComponent(projectKey)}/statuses`
+  );
+  const seen = new Set<string>();
+  for (const issueType of data) {
+    for (const s of issueType.statuses) {
+      seen.add(s.name);
+    }
+  }
+  return [...seen].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+}
+
+export async function getBoards(config: Config, projectKey: string): Promise<JiraBoard[]> {
+  const all: JiraBoard[] = [];
+  let startAt = 0;
+  while (true) {
+    const res = await req<{ values: JiraBoard[]; isLast: boolean }>(
+      config, "GET",
+      `/rest/agile/1.0/board?projectKeyOrId=${encodeURIComponent(projectKey)}&type=scrum,kanban&maxResults=50&startAt=${startAt}`
+    );
+    all.push(...res.values);
+    if (res.isLast || res.values.length === 0) break;
+    startAt += res.values.length;
+  }
+  return all;
+}
+
+export async function getBoardSprints(
+  config: Config,
+  boardId: number,
+  state: "active" | "future" | "closed"
+): Promise<JiraSprint[]> {
+  const all: JiraSprint[] = [];
+  let startAt = 0;
+  while (true) {
+    const res = await req<{ values: JiraSprint[]; isLast: boolean }>(
+      config, "GET",
+      `/rest/agile/1.0/board/${boardId}/sprint?state=${state}&maxResults=50&startAt=${startAt}`
+    );
+    all.push(...res.values);
+    if (res.isLast || res.values.length === 0) break;
+    startAt += res.values.length;
+  }
+  return all;
 }

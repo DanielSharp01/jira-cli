@@ -1,3 +1,12 @@
+export interface TableWidths {
+  key?: number;
+  type?: number;
+  status?: number;
+  sprint?: number;
+  estimate?: number;
+  summary?: number;
+}
+
 export interface Config {
   baseUrl: string;
   accountId: string;
@@ -5,6 +14,7 @@ export interface Config {
   authType: "cloud" | "datacenter";
   jiraPat: string;
   tempoPat: string;
+  tableWidths?: TableWidths;
 }
 
 export interface JiraUser {
@@ -43,8 +53,20 @@ export interface AdfNode {
 export interface JiraSprint {
   id: number;
   name: string;
+  state?: "active" | "future" | "closed";
   startDate?: string;
   endDate?: string;
+}
+
+export interface JiraBoard {
+  id: number;
+  name: string;
+}
+
+export interface JiraIssueType {
+  id: string;
+  name: string;
+  subtask: boolean;
 }
 
 export interface JiraIssue {
@@ -52,7 +74,7 @@ export interface JiraIssue {
   key: string;
   fields: {
     summary: string;
-    issuetype: { name: string; iconUrl?: string };
+    issuetype: { name: string; iconUrl?: string; subtask: boolean };
     status: { name: string; statusCategory?: { key: string } };
     assignee: JiraUser | null;
     reporter: JiraUser | null;
@@ -64,6 +86,7 @@ export interface JiraIssue {
       originalEstimate?: string;
       remainingEstimate?: string;
     };
+    parent?: { key: string; fields?: { timetracking?: { originalEstimate?: string } } };
     comment?: {
       comments: JiraComment[];
       total: number;

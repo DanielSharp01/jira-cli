@@ -3,6 +3,7 @@ import pc from "picocolors";
 import { createInterface } from "node:readline";
 import { loadConfig } from "../../lib/config.ts";
 import { getWorklogs, deleteWorklog, createWorklog } from "../../lib/tempo.ts";
+import { getIssueIdsByKeys } from "../../lib/jira.ts";
 import { parseDuration, formatDuration } from "../../lib/duration.ts";
 import type { WorklogEntry } from "../../lib/types.ts";
 
@@ -159,10 +160,19 @@ export async function worklog(dayInput: string | undefined): Promise<void> {
       await deleteWorklog(config, w.tempoWorklogId);
     }
 
+    // Resolve issue keys to numeric IDs
+    const allKeys = [...new Set(entries.map((e) => e.issueKey))];
+    const issueIds = await getIssueIdsByKeys(config, allKeys);
+
     // Create new
     for (const entry of entries) {
+      const issueId = issueIds.get(entry.issueKey);
+      if (!issueId) {
+        p.log.warn(`Could not resolve issue ID for ${entry.issueKey} — skipping.`);
+        continue;
+      }
       await createWorklog(config, {
-        issueKey: entry.issueKey,
+        issueId,
         timeSpentSeconds: entry.durationSeconds,
         startDate: date,
         startTime: "09:00:00",

@@ -106,15 +106,12 @@ export async function commentOnIssue(key: string): Promise<void> {
   const mentions = new Map<string, JiraUser>();
 
   for (const token of tokens) {
-    spinner.start(`Searching for user "${token}"…`);
     let users: JiraUser[];
     try {
       users = await searchUsers(config, token);
     } catch {
       users = [];
     }
-    spinner.stop("");
-
     if (users.length === 0) {
       p.log.warn(`No users found for "@@${token}" — will be left as plain text.`);
       continue;

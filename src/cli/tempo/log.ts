@@ -8,42 +8,94 @@ import { parseDateRange } from "../../lib/date-range.ts";
 import { parseDuration, formatDuration } from "../../lib/duration.ts";
 import type { TempoWorklog } from "../../lib/types.ts";
 
-const ENTRY_RE = /^(?:-\s+)?([A-Z][A-Z0-9]+-\d+)\s+(.+?)\s+(\S+)$/;
+const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 function dayLabel(dateStr: string): string {
-  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  const d = new Date(`${dateStr}T12:00:00`);
-  return days[d.getDay()]!;
+  return DAYS[new Date(`${dateStr}T12:00:00`).getDay()]!;
 }
 
-interface WorklogEntry {
+// ---------------------------------------------------------------------------
+// Entry parsing
+// ---------------------------------------------------------------------------
+
+export interface WorklogEntry {
   issueKey: string;
   description: string;
   durationSeconds: number;
 }
 
-function parseEntryLine(line: string): WorklogEntry {
-  const m = line.match(ENTRY_RE);
-  if (!m) {
-    throw new Error(`Cannot parse: "${line}". Format: KEY description duration`);
-  }
-  const [, issueKey, description, durationStr] = m;
-  const durationSeconds = parseDuration(durationStr!);
-  return { issueKey: issueKey!, description: description!, durationSeconds };
+const KEY_RE = /^[A-Z][A-Z0-9]+-\d+$/;
+const DUR_RE = /^(?:\d+(?:\.\d+)?h)?(?:\d+(?:\.\d+)?m)?$/;
+
+function isDurationToken(t: string): boolean {
+  return DUR_RE.test(t) && t.length > 0 && t !== "h" && t !== "m";
 }
+
+/** Parse a worklog entry line in any order: KEY description duration.
+ *  Dashes are allowed as separators between parts.
+ *  If multiple key-like tokens exist, the FIRST is used as the issue key.
+ *  Duration must be unambiguous (exactly one token matching duration format).
+ */
+export function parseEntryLine(line: string): WorklogEntry {
+  // Strip leading dashes/spaces
+  const stripped = line.replace(/^[\s\-–—]+/, "");
+
+  // Split by: space-surrounded dashes, 2+ consecutive dashes (unambiguous separator
+  // since issue keys only use single dashes), or plain whitespace.
+  const tokens = stripped
+    .split(/\s+[-–—]+\s+|\s*-{2,}\s*|\s+/)
+    .map(t => t.replace(/^[-–—]+/, "").replace(/[-–—]+$/, ""))
+    .filter(t => t.length > 0);
+
+  const keyTokens = tokens.filter(t => KEY_RE.test(t));
+  const durTokens = tokens.filter(t => isDurationToken(t));
+
+  if (keyTokens.length === 0) {
+    throw new Error(`Cannot parse: "${line}" — no issue key found`);
+  }
+  if (durTokens.length === 0) {
+    throw new Error(`Cannot parse: "${line}" — no duration found`);
+  }
+
+  // First match wins for both key and duration; extras go into description
+  const issueKey = keyTokens[0]!;
+  const durationStr = durTokens[0]!;
+  const durationSeconds = parseDuration(durationStr);
+
+  // Everything except the first key token and the first duration token → description
+  let keyUsed = false;
+  let durUsed = false;
+  const descTokens = tokens.filter(t => {
+    if (!keyUsed && t === issueKey) { keyUsed = true; return false; }
+    if (!durUsed && t === durationStr) { durUsed = true; return false; }
+    return true;
+  });
+
+  const description = descTokens.join(" ");
+  if (!description) {
+    throw new Error(`Cannot parse: "${line}" — no description found`);
+  }
+
+  return { issueKey, description, durationSeconds };
+}
+
+// ---------------------------------------------------------------------------
+// File parsing
+// ---------------------------------------------------------------------------
 
 function parseMarkdownFile(content: string): Map<string, WorklogEntry[]> {
   const result = new Map<string, WorklogEntry[]>();
   let currentDate: string | null = null;
 
   for (const line of content.split("\n")) {
+    // Match headers like "# 2026-03-02" or "# 2026-03-02 (Monday)"
     const headerMatch = line.match(/^#\s+(\d{4}-\d{2}-\d{2})/);
     if (headerMatch) {
       currentDate = headerMatch[1]!;
       result.set(currentDate, []);
       continue;
     }
-    if (currentDate && line.startsWith("- ")) {
+    if (currentDate && line.match(/^[\s\-–—]*[A-Z]/)) {
       try {
         result.get(currentDate)!.push(parseEntryLine(line));
       } catch {
@@ -55,25 +107,29 @@ function parseMarkdownFile(content: string): Map<string, WorklogEntry[]> {
   return result;
 }
 
-type DayAction = "replace" | "append" | "leave" | "skip";
+// ---------------------------------------------------------------------------
+// Interactive entry collection
+// ---------------------------------------------------------------------------
 
-interface DayPlan {
-  date: string;
-  existing: TempoWorklog[];
-  action: DayAction;
-  entries: WorklogEntry[];
-}
-
-async function collectInteractiveEntries(date: string, existing: TempoWorklog[], existingIssueKeys: Map<number, string>): Promise<WorklogEntry[]> {
-  const existingSummary = existing.length > 0
-    ? existing.map(w => `${existingIssueKeys.get(w.issue.id) ?? w.issue.id} ${formatDuration(w.timeSpentSeconds)} ${w.description}`).join(", ")
-    : "no logs";
+async function collectInteractiveEntries(
+  date: string,
+  totalExistingSeconds: number,
+  loggedThreshold: number,
+  existingSummary: string
+): Promise<WorklogEntry[]> {
+  const loggedStr = formatDuration(totalExistingSeconds);
+  const threshStr = formatDuration(loggedThreshold);
 
   console.log(pc.dim(`\n──────────────────────────────────────`));
-  console.log(` ${pc.bold(date)} (${dayLabel(date)})`);
-  console.log(` Existing: ${existingSummary}`);
+  if (totalExistingSeconds > 0) {
+    console.log(` ${pc.bold(date)} (logged: ${loggedStr}/${threshStr})`);
+    console.log(` Existing: ${existingSummary}`);
+  } else {
+    console.log(` ${pc.bold(date)}`);
+  }
   console.log(pc.dim(`──────────────────────────────────────`));
-  console.log(pc.dim(`Enter entries (KEY description duration). Blank line = done.`));
+  console.log(pc.dim(`  [Issue key   task description   duration]`));
+  console.log(pc.dim(`  Enter entries. Blank line = done.`));
 
   const entries: WorklogEntry[] = [];
   const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
@@ -104,26 +160,76 @@ async function collectInteractiveEntries(date: string, existing: TempoWorklog[],
   return entries;
 }
 
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+type DayAction = "replace" | "append" | "leave" | "skip";
+
+interface DayPlan {
+  date: string;
+  existing: TempoWorklog[];
+  action: DayAction;
+  entries: WorklogEntry[];
+}
+
 export async function logTempo(
   fromArg?: string,
   toArg?: string,
-  opts: { file?: string; skipWhen?: string } = {}
+  opts: {
+    file?: string;
+    stdin?: boolean;
+    days?: string;
+    logged?: string;
+    exact?: boolean;
+    prompt?: boolean;
+  } = {}
 ): Promise<void> {
   const config = loadConfig();
 
+  if (opts.file && opts.stdin) {
+    p.log.error("Cannot use --file and --stdin together.");
+    process.exit(1);
+  }
+
+  let loggedThreshold: number;
+  try {
+    loggedThreshold = parseDuration(opts.logged ?? "8h");
+  } catch {
+    p.log.error(`Invalid --logged value "${opts.logged}"`);
+    process.exit(1);
+  }
+
+  // Load file/stdin content
   let fileEntries: Map<string, WorklogEntry[]> | null = null;
-  if (opts.file) {
+  if (opts.file || opts.stdin) {
     try {
-      const content = await Bun.file(opts.file).text();
+      const content = opts.file
+        ? await Bun.file(opts.file).text()
+        : await Bun.stdin.text();
       fileEntries = parseMarkdownFile(content);
     } catch (err) {
-      p.log.error(`Failed to read file: ${String(err)}`);
+      p.log.error(`Failed to read input: ${String(err)}`);
       process.exit(1);
     }
   }
 
+  // Determine if a date range was explicitly provided
+  const hasExplicitRange = !!(fromArg || toArg);
+
+  // Validate --exact/--prompt usage with file mode
+  if (fileEntries && !hasExplicitRange && (opts.exact || opts.prompt)) {
+    p.log.error("--exact and --prompt require an explicit date range when using --file/--stdin.");
+    process.exit(1);
+  }
+
+  // Implied defaults when file + explicit range
+  const useExact = fileEntries && hasExplicitRange ? (opts.exact ?? true) : (opts.exact ?? false);
+  const usePrompt = fileEntries && hasExplicitRange ? (opts.prompt ?? true) : (opts.prompt ?? false);
+
+  // Resolve date range
   let range: { from: string; to: string };
-  if (!fromArg && fileEntries) {
+  if (!hasExplicitRange && fileEntries) {
     const dates = [...fileEntries.keys()].sort();
     if (dates.length === 0) {
       p.log.error("File has no dated sections.");
@@ -168,49 +274,125 @@ export async function logTempo(
     existingByDate.set(wl.startDate, arr);
   }
 
-  // Build day plans — for file mode: pre-flight then assign; for interactive: handle each day fully in order
+  // Apply --days filter for interactive mode (and --exact validation)
+  const daysFilter = opts.days ?? "unlogged";
+  const today = new Date().toISOString().slice(0, 10);
+
+  const filteredWorkingDays = workingDays.filter(date => {
+    if (date > today) return false;
+    const total = (existingByDate.get(date) ?? []).reduce((s, w) => s + w.timeSpentSeconds, 0);
+    if (daysFilter === "unlogged") return total < loggedThreshold;
+    if (daysFilter === "no-logs") return total === 0;
+    return true; // "working" or "all"
+  });
+
+  // File mode iterates ALL working days in range (--days is ignored per spec).
+  // Interactive mode uses the filtered list.
+  const workingDaysInRange = workingDays.filter(d => d <= today);
+
+  // --exact validation: compare file dates against ALL working days (not filtered)
+  if (fileEntries && useExact) {
+    const fileDates = new Set(fileEntries.keys());
+    const expectedDates = new Set(workingDaysInRange);
+    const extra = [...fileDates].filter(d => !expectedDates.has(d));
+    const missing = [...expectedDates].filter(d => !fileDates.has(d) && !usePrompt);
+    if (extra.length > 0) {
+      p.log.error(`--exact: file contains days outside the working-day range: ${extra.join(", ")}`);
+      process.exit(1);
+    }
+    if (missing.length > 0) {
+      p.log.error(`--exact: file is missing working days: ${missing.join(", ")}`);
+      process.exit(1);
+    }
+  }
+
+  // Build day plans
   const dayPlans: DayPlan[] = [];
 
-  for (const date of workingDays) {
+  // Determine which days to iterate
+  const daysToProcess = fileEntries
+    ? workingDaysInRange  // file mode: all working days, --days ignored
+    : (daysFilter === "all"
+        ? (() => {
+            const all: string[] = [];
+            const cur = new Date(`${range.from}T12:00:00`);
+            const end = new Date(`${range.to}T12:00:00`);
+            while (cur <= end) {
+              const d = cur.toISOString().slice(0, 10);
+              if (d <= today) all.push(d);
+              cur.setDate(cur.getDate() + 1);
+            }
+            return all;
+          })()
+        : filteredWorkingDays);
+
+  for (const date of daysToProcess) {
     const existing = existingByDate.get(date) ?? [];
     const totalExistingSeconds = existing.reduce((s, w) => s + w.timeSpentSeconds, 0);
+    const existingSummary = existing.length > 0
+      ? existing.map(w => `${existingIssueKeys.get(w.issue.id) ?? w.issue.id} ${formatDuration(w.timeSpentSeconds)} ${w.description}`).join(", ")
+      : "no logs";
 
-    if (opts.skipWhen === "8h" && totalExistingSeconds >= 28_800) {
-      dayPlans.push({ date, existing, action: "skip", entries: [] });
-      continue;
-    }
-    if (opts.skipWhen === "any" && existing.length > 0) {
-      dayPlans.push({ date, existing, action: "skip", entries: [] });
-      continue;
-    }
-
-    let action: DayAction = "append";
+    // File mode
     if (fileEntries) {
-      action = "replace";
-    } else if (existing.length > 0) {
-      const existingSummary = existing.map(w => `${existingIssueKeys.get(w.issue.id) ?? w.issue.id} ${formatDuration(w.timeSpentSeconds)} ${w.description}`).join(", ");
-      console.log(`\n  ${pc.bold(date)} (${dayLabel(date)}) — Existing: ${existingSummary}`);
+      const fileDay = fileEntries.get(date);
+      if (fileDay === undefined) {
+        // Day not in file
+        if (usePrompt) {
+          const entries = await collectInteractiveEntries(date, totalExistingSeconds, loggedThreshold, existingSummary);
+          const action: DayAction = existing.length > 0 ? "replace" : "append";
+          dayPlans.push({ date, existing, action, entries });
+        }
+        // else: skip silently
+        continue;
+      }
+      dayPlans.push({ date, existing, action: "replace", entries: fileDay });
+      continue;
+    }
 
+    // Interactive mode — handle fully logged days
+    if (totalExistingSeconds >= loggedThreshold) {
+      // Should only reach here if daysFilter includes them (working/all)
+      console.log(`\n  ${pc.bold(date)} (${dayLabel(date)}) — ${pc.yellow(`logged: ${formatDuration(totalExistingSeconds)}/${formatDuration(loggedThreshold)}`)} — ${pc.dim("skipped")}`);
+      dayPlans.push({ date, existing, action: "skip", entries: [] });
+      continue;
+    }
+
+    // Interactive mode — partially or unlogged
+    let action: DayAction = "append";
+    if (existing.length > 0) {
       const choice = await p.select({
-        message: "This day has existing logs",
+        message: `${pc.bold(date)} (logged: ${formatDuration(totalExistingSeconds)}/${formatDuration(loggedThreshold)})`,
         options: [
-          { value: "replace", label: "Replace — delete existing and log new entries" },
           { value: "append", label: "Append — keep existing, add new entries" },
+          { value: "replace", label: "Replace — delete existing and log new entries" },
           { value: "leave", label: "Leave — skip this day" },
         ],
       });
-
       if (p.isCancel(choice)) {
         p.cancel("Cancelled.");
         process.exit(0);
       }
-
       action = choice as DayAction;
     }
 
-    let entries: WorklogEntry[] = [];
-    if (action !== "leave") {
-      entries = fileEntries ? (fileEntries.get(date) ?? []) : await collectInteractiveEntries(date, existing, existingIssueKeys);
+    if (action === "leave") {
+      dayPlans.push({ date, existing, action: "leave", entries: [] });
+      continue;
+    }
+
+    let entries = await collectInteractiveEntries(date, totalExistingSeconds, loggedThreshold, existingSummary);
+
+    // Over/under warning + redo
+    const newTotal = entries.reduce((s, e) => s + e.durationSeconds, 0);
+    const effectiveTotal = action === "append" ? totalExistingSeconds + newTotal : newTotal;
+    if (entries.length > 0 && effectiveTotal !== loggedThreshold) {
+      const dir = effectiveTotal < loggedThreshold ? "under" : "over";
+      console.log(pc.yellow(`  ⚠  ${date}: ${formatDuration(effectiveTotal)} logged (${dir} ${formatDuration(loggedThreshold)})`));
+      const redo = await p.confirm({ message: "Redo this day?" });
+      if (!p.isCancel(redo) && redo) {
+        entries = await collectInteractiveEntries(date, totalExistingSeconds, loggedThreshold, existingSummary);
+      }
     }
 
     dayPlans.push({ date, existing, action, entries });
@@ -224,6 +406,51 @@ export async function logTempo(
     return;
   }
 
+  // File mode: batch overwrite confirmation
+  if (fileEntries) {
+    const overwrites = daysToApply.filter(plan => plan.action === "replace" && plan.existing.length > 0);
+    if (overwrites.length > 0) {
+      console.log(`\n${pc.bold("The following days have existing logs that would be replaced:")}`);
+      for (const plan of overwrites) {
+        const total = plan.existing.reduce((s, w) => s + w.timeSpentSeconds, 0);
+        console.log(`  ${pc.bold(plan.date)} (logged: ${formatDuration(total)}/${formatDuration(loggedThreshold)})`);
+      }
+
+      let confirmed = false;
+      while (!confirmed) {
+        const choice = await p.select({
+          message: "Proceed?",
+          options: [
+            { value: "yes", label: "Yes — apply all changes" },
+            { value: "no", label: "No — cancel" },
+            { value: "show", label: "Show — display existing and new entries" },
+          ],
+        });
+        if (p.isCancel(choice) || choice === "no") {
+          p.cancel("Cancelled.");
+          return;
+        }
+        if (choice === "yes") {
+          confirmed = true;
+        } else {
+          // Show
+          for (const plan of overwrites) {
+            const existingLines = plan.existing.map(w =>
+              `    existing: ${existingIssueKeys.get(w.issue.id) ?? w.issue.id} ${formatDuration(w.timeSpentSeconds)} ${w.description}`
+            );
+            const newLines = plan.entries.map(e =>
+              `    new:      ${e.issueKey} ${formatDuration(e.durationSeconds)} ${e.description}`
+            );
+            console.log(`\n  ${pc.bold(plan.date)}:`);
+            for (const l of existingLines) console.log(pc.dim(l));
+            for (const l of newLines) console.log(pc.green(l));
+          }
+        }
+      }
+    }
+  }
+
+  // Summary + over/under warnings for file mode
   console.log(`\n${pc.bold("Summary:")}`);
   for (const plan of dayPlans) {
     if (plan.action === "skip") {
@@ -233,20 +460,42 @@ export async function logTempo(
     } else if (plan.entries.length === 0) {
       console.log(`  ${pc.dim("–")} ${plan.date}  no entries`);
     } else {
-      const total = plan.entries.reduce((s, e) => s + e.durationSeconds, 0);
+      const newTotal = plan.entries.reduce((s, e) => s + e.durationSeconds, 0);
+      const effectiveTotal = plan.action === "append"
+        ? plan.existing.reduce((s, w) => s + w.timeSpentSeconds, 0) + newTotal
+        : newTotal;
       const n = plan.entries.length;
-      console.log(`  ${pc.green("✓")} ${plan.date}  ${formatDuration(total)} (${n} entr${n === 1 ? "y" : "ies"}) — ${plan.action}`);
+      const threshStr = formatDuration(loggedThreshold);
+      const totalStr = formatDuration(effectiveTotal);
+      const mismatch = effectiveTotal !== loggedThreshold;
+      const line = `  ${mismatch ? pc.yellow("⚠") : pc.green("✓")} ${plan.date}  ${totalStr}/${threshStr} (${n} entr${n === 1 ? "y" : "ies"}) — ${plan.action}`;
+      console.log(line);
     }
   }
 
-  const overwrites = daysToApply.filter(p => p.action === "replace" && p.existing.length > 0).length;
-  const confirmMsg = overwrites > 0
-    ? `Apply ${daysToApply.length} day(s)? (${overwrites} will overwrite existing logs)`
-    : `Apply ${daysToApply.length} day(s)?`;
-  const confirmed = await p.confirm({ message: confirmMsg });
-  if (p.isCancel(confirmed) || !confirmed) {
-    p.cancel("Cancelled.");
-    return;
+  // Final confirmation (interactive mode / non-file mode, or file without overwrites)
+  if (fileEntries) {
+    // File mode without overwrites still needs confirmation
+    const hasOverwrites = daysToApply.some(plan => plan.action === "replace" && plan.existing.length > 0);
+    if (!hasOverwrites) {
+      const confirmed = await p.confirm({ message: `Apply ${daysToApply.length} day(s)?` });
+      if (p.isCancel(confirmed) || !confirmed) {
+        p.cancel("Cancelled.");
+        return;
+      }
+    }
+    // if has overwrites, already confirmed above in batch step
+  } else {
+    // Interactive mode confirmation
+    const overwrites = daysToApply.filter(plan => plan.action === "replace" && plan.existing.length > 0).length;
+    const confirmMsg = overwrites > 0
+      ? `Apply ${daysToApply.length} day(s)? (${overwrites} will overwrite existing logs)`
+      : `Apply ${daysToApply.length} day(s)?`;
+    const confirmed = await p.confirm({ message: confirmMsg });
+    if (p.isCancel(confirmed) || !confirmed) {
+      p.cancel("Cancelled.");
+      return;
+    }
   }
 
   // Resolve issue keys → IDs for all entries
@@ -288,7 +537,6 @@ export async function logTempo(
         }
       }
 
-      // Start after existing logs end (append), or at 09:00 (replace/fresh)
       let cursorSeconds = 9 * 3600;
       if (plan.action === "append" && plan.existing.length > 0) {
         const lastEnd = Math.max(...plan.existing.map(w => {
@@ -340,18 +588,6 @@ export async function logTempo(
       console.log(`${pc.dim("↓")}  ${r.date}  skipped`);
     } else {
       console.log(`${pc.dim("–")}  ${r.date}  no entries (left empty)`);
-    }
-  }
-
-  // File mode: note working days with no file entries (and not skipped)
-  if (fileEntries) {
-    const missingDays = workingDays.filter(date => {
-      const plan = dayPlans.find(pl => pl.date === date)!;
-      return plan.action !== "skip" && (fileEntries!.get(date)?.length ?? 0) === 0;
-    });
-    if (missingDays.length > 0) {
-      console.log(`\n${pc.yellow(`Note: ${missingDays.length} working day(s) had no entries in the file:`)}`);
-      console.log(`  ${missingDays.join(", ")}`);
     }
   }
 

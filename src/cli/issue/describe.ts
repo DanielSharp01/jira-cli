@@ -3,6 +3,7 @@ import pc from "picocolors";
 import { loadConfig } from "../../lib/config.ts";
 import { getIssue, extractSprint, getSprint } from "../../lib/jira.ts";
 import { adfToMarkdown } from "../../lib/adf.ts";
+import { sprintDateRange } from "../../lib/tui.ts";
 
 export async function describeIssue(key: string): Promise<void> {
   const config = loadConfig();
@@ -24,9 +25,8 @@ export async function describeIssue(key: string): Promise<void> {
   if (sprintRef) {
     try {
       const sprint = await getSprint(config, sprintRef.id);
-      if (sprint.startDate && sprint.endDate) {
-        sprintRange = `${sprint.startDate.slice(0, 10)} – ${sprint.endDate.slice(0, 10)}`;
-      }
+      const dates = sprintDateRange(sprint.startDate, sprint.endDate);
+      sprintRange = dates ? `${sprint.name}  ${dates}` : sprint.name;
     } catch {
       // best-effort
     }

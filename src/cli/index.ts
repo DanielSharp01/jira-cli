@@ -6,7 +6,7 @@ import { pushIssue } from "./issue/push.ts";
 import { commentOnIssue } from "./issue/comment.ts";
 import { showTempo } from "./tempo/show.ts";
 import { logTempo } from "./tempo/log.ts";
-import { runConfig } from "./config.ts";
+import { runConfig, getConfig, setConfig } from "./config.ts";
 import { configureProjectWorkdir } from "./project/workdir.ts";
 import { projectPullIssues } from "./project/pull.ts";
 import { exploreIssues } from "./explore.ts";
@@ -16,18 +16,47 @@ export function buildProgram(): Command {
     .description("JIRA & Tempo CLI")
     .version("0.1.0");
 
-  // jira config [key] [value]
-  program
-    .command("config [key] [value]")
-    .description("Configure JIRA credentials, or get/set individual keys")
-    .action(async (key?: string, value?: string) => {
-      await runConfig(key, value);
-    });
+  // jira config
+  const config = program.command("config").description("Manage JIRA configuration");
+
+  config
+    .command("setup")
+    .description("Run interactive setup wizard")
+    .action(async () => { await runConfig(); });
+
+  config
+    .command("get [key]")
+    .description([
+      "Show all config values, or a single key",
+      "Keys:",
+      "  baseUrl",
+      "  authType",
+      "  email",
+      "  jiraPat",
+      "  tempoPat",
+      "  tableWidths",
+      "    key  type  status  sprint  estimate  summary",
+      "  accountId  (read-only)",
+    ].join("\n"))
+    .action(async (key?: string) => { await getConfig(key); });
+
+  config
+    .command("set [key] [value]")
+    .description([
+      "Interactively set a config value, or pass key and value directly",
+      "Keys:",
+      "  baseUrl",
+      "  authType",
+      "  email",
+      "  jiraPat",
+      "  tempoPat",
+      "  tableWidths",
+      "    key  type  status  sprint  estimate  summary",
+    ].join("\n"))
+    .action(async (key?: string, value?: string) => { await setConfig(key, value); });
 
   // jira issue <subcommand>
-  const issue = program
-    .command("issue")
-    .description("Issue operations");
+  const issue = program.command("issue").description("Issue operations");
 
   issue
     .command("describe [key]")
@@ -50,16 +79,22 @@ export function buildProgram(): Command {
         .argument("[status]", "Target status name")
         .action(async (key: string, status?: string) => {
           await setStatus(key.toUpperCase(), status);
-        })
+        }),
     );
 
   issue
     .command("pull <key> [file]")
     .description("Fetch issue and write as Markdown")
     .option("--comments", "Include comments section")
-    .action(async (key: string, file: string | undefined, opts: { comments?: boolean }) => {
-      await pullIssue(key.toUpperCase(), file, opts);
-    });
+    .action(
+      async (
+        key: string,
+        file: string | undefined,
+        opts: { comments?: boolean },
+      ) => {
+        await pullIssue(key.toUpperCase(), file, opts);
+      },
+    );
 
   issue
     .command("push <key> [file]")
@@ -89,44 +124,111 @@ export function buildProgram(): Command {
 
   project
     .command("pull [project] [scope]")
-    .description("Bulk pull issues into working directory (scope: sprint|backlog|all)")
-    .option("--from <date>", "Only issues updated on or after this date (YYYY-MM-DD)")
-    .option("--status <statuses>", "Comma-separated status names to filter by")
-    .action(async (projectKey?: string, scope?: string, opts: { from?: string; status?: string } = {}) => {
-      await projectPullIssues(projectKey, scope, opts);
-    });
+    .description('Bulk pull issues into working directory (scope: sprint|current-sprint|backlog|all|"Sprint Name")')
+    .option("--from <date>", "Updated on or after (YYYY-MM-DD or date expression)")
+    .option("--to <date>", "Updated on or before (YYYY-MM-DD or date expression)")
+    .option("--fromKey <number>", "Minimum issue number", parseInt)
+    .option("--toKey <number>", "Maximum issue number", parseInt)
+    .option("--status <values>", "Comma-separated statuses; prefix with not: to exclude")
+    .option("--type <values>", "Comma-separated issue types; prefix with not: to exclude")
+    .option("--estimated <mode>", "Estimate filter: all|yes|no|parent (default: all)")
+    .option("--name <query>", "Search summary (Google-style: foo \"exact phrase\")")
+    .option("--description <query>", "Search description (Google-style)")
+    .option("--pick", "Interactively select which issues to pull")
+    .action(
+      async (
+        projectKey?: string,
+        scope?: string,
+        opts: { from?: string; to?: string; fromKey?: number; toKey?: number; status?: string; type?: string; estimated?: string; name?: string; description?: string; pick?: boolean } = {},
+      ) => {
+        await projectPullIssues(projectKey, scope, opts);
+      },
+    );
 
   // jira explore
   program
     .command("explore [project] [scope]")
-    .description("Browse JIRA issues interactively (scope: sprint|backlog|all)")
-    .option("--from <date>", "Only issues updated on or after this date (YYYY-MM-DD)")
-    .option("--status <statuses>", "Comma-separated status names to filter by")
-    .action(async (project?: string, scope?: string, opts: { from?: string; status?: string } = {}) => {
-      await exploreIssues(project, scope, opts);
-    });
+    .description('Browse JIRA issues interactively (scope: sprint|current-sprint|backlog|all|"Sprint Name")')
+    .option("--from <date>", "Updated on or after (YYYY-MM-DD or date expression)")
+    .option("--to <date>", "Updated on or before (YYYY-MM-DD or date expression)")
+    .option("--fromKey <number>", "Minimum issue number", parseInt)
+    .option("--toKey <number>", "Maximum issue number", parseInt)
+    .option("--status <values>", "Comma-separated statuses; prefix with not: to exclude")
+    .option("--type <values>", "Comma-separated issue types; prefix with not: to exclude")
+    .option("--estimated <mode>", "Estimate filter: all|yes|no|parent (default: all)")
+    .option("--name <query>", "Search summary (Google-style: foo \"exact phrase\")")
+    .option("--description <query>", "Search description (Google-style)")
+    .option("--no-interactive", "Print results to stdout without launching the TUI")
+    .action(
+      async (
+        project?: string,
+        scope?: string,
+        opts: { from?: string; to?: string; fromKey?: number; toKey?: number; status?: string; type?: string; estimated?: string; name?: string; description?: string; interactive?: boolean } = {},
+      ) => {
+        await exploreIssues(project, scope, opts);
+      },
+    );
 
   // jira tempo <subcommand>
-  const tempo = program
-    .command("tempo")
-    .description("Tempo operations");
+  const tempo = program.command("tempo").description("Tempo operations");
 
   tempo
     .command("show [from] [to]")
-    .description("Show logged hours across a date range (from: YYYY-MM-DD, week, month)")
-    .option("--file [path]", "Emit markdown to stdout or write to a file if path given")
-    .action(async (from?: string, to?: string, opts: { file?: boolean } = {}) => {
-      await showTempo(from, to, opts);
-    });
+    .description(
+      "Show logged hours. [from] syntax (inclusive on both sides): today, yesterday, year, month, week, YYYY-MM-DD, [-]N-unit, last/next-unit, or append -end for period end (e.g. month-end, week-end). [to] uses the same syntax.",
+    )
+    .option("--file <path>", "Write markdown to a file")
+    .option("--stdout", "Print markdown to stdout")
+    .option(
+      "--days <filter>",
+      "Day filter: all|working|unlogged|no-logs (default: unlogged)",
+    )
+    .option("--logged <duration>", "Fully-logged threshold (default: 8h)")
+    .option("--short", "Compact view: one line per day showing logged/target")
+    .action(
+      async (
+        from?: string,
+        to?: string,
+        opts: {
+          file?: string;
+          stdout?: boolean;
+          days?: string;
+          logged?: string;
+          short?: boolean;
+        } = {},
+      ) => {
+        await showTempo(from, to, opts);
+      },
+    );
 
   tempo
     .command("log [from] [to]")
-    .description("Log hours across a date range (from: YYYY-MM-DD, week, month)")
+    .description("Log hours interactively or from a file/stdin")
     .option("--file <path>", "Read entries from a markdown file")
-    .option("--skip-when <value>", "Skip days: '8h' (fully logged) or 'any' (has any log)")
-    .action(async (from?: string, to?: string, opts: { file?: string; skipWhen?: string } = {}) => {
-      await logTempo(from, to, opts);
-    });
+    .option("--stdin", "Read entries from stdin")
+    .option(
+      "--days <filter>",
+      "Day filter: all|working|unlogged|no-logs (default: unlogged)",
+    )
+    .option("--logged <duration>", "Fully-logged threshold (default: 8h)")
+    .option("--exact", "File days must exactly match the filtered working days")
+    .option("--prompt", "Prompt interactively for days missing from file")
+    .action(
+      async (
+        from?: string,
+        to?: string,
+        opts: {
+          file?: string;
+          stdin?: boolean;
+          days?: string;
+          logged?: string;
+          exact?: boolean;
+          prompt?: boolean;
+        } = {},
+      ) => {
+        await logTempo(from, to, opts);
+      },
+    );
 
   return program;
 }
