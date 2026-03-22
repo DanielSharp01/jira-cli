@@ -52,24 +52,36 @@ export async function showTempo(
   }
 
   const config = loadConfig();
-  const spinner = p.spinner();
-  spinner.start(`Loading worklogs ${range.from} → ${range.to}…`);
+  const quiet = opts.stdout;
 
   let worklogs: TempoWorklog[];
   let workingDays: string[];
 
-  try {
-    [worklogs, workingDays] = await Promise.all([
-      getWorklogsForRange(config, range.from, range.to),
-      getWorkingDays(config, range.from, range.to),
-    ]);
-  } catch (err) {
-    spinner.stop("Failed");
-    p.log.error(String(err));
-    process.exit(1);
+  if (quiet) {
+    try {
+      [worklogs, workingDays] = await Promise.all([
+        getWorklogsForRange(config, range.from, range.to),
+        getWorkingDays(config, range.from, range.to),
+      ]);
+    } catch (err) {
+      process.stderr.write(`Error: ${err}\n`);
+      process.exit(1);
+    }
+  } else {
+    const spinner = p.spinner();
+    spinner.start(`Loading worklogs ${range.from} → ${range.to}…`);
+    try {
+      [worklogs, workingDays] = await Promise.all([
+        getWorklogsForRange(config, range.from, range.to),
+        getWorkingDays(config, range.from, range.to),
+      ]);
+    } catch (err) {
+      spinner.stop("Failed");
+      p.log.error(String(err));
+      process.exit(1);
+    }
+    spinner.stop(`Loaded ${worklogs.length} worklog(s) across ${workingDays.length} working day(s)`);
   }
-
-  spinner.stop(`Loaded ${worklogs.length} worklog(s) across ${workingDays.length} working day(s)`);
 
   const issueIds = [...new Set(worklogs.map(w => w.issue.id))];
   const issueKeys = await getIssueKeysByIds(config, issueIds);
@@ -82,7 +94,7 @@ export async function showTempo(
   }
 
   // Build candidate day list based on --days filter
-  const daysFilter = opts.days ?? "unlogged";
+  const daysFilter = opts.days ?? "working";
   const candidateDays = daysFilter === "all" ? allCalendarDays(range.from, range.to) : workingDays;
 
   const today = new Date().toISOString().slice(0, 10);

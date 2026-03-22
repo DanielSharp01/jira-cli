@@ -88,24 +88,33 @@ function optsToFilters(scope: string | undefined, opts: ExploreOpts): JqlFilters
 
 const SEARCH_CAP = 500;
 
-async function fetchIssues(config: ReturnType<typeof loadConfig>, projectKey: string, filters: JqlFilters): Promise<{ issues: JiraIssue[]; hasMore: boolean }> {
+async function fetchIssues(config: ReturnType<typeof loadConfig>, projectKey: string, filters: JqlFilters, quiet = false): Promise<{ issues: JiraIssue[]; hasMore: boolean }> {
   const jql = buildJql(projectKey, filters);
-  const spinner = p.spinner();
-  spinner.start(`Searching ${projectKey}…`);
   let issues: JiraIssue[];
-  try {
-    issues = await searchIssues(config, jql, SEARCH_CAP + 1);
-  } catch (err) {
-    spinner.stop("Failed");
-    p.log.error(String(err));
-    process.exit(1);
+  if (quiet) {
+    try {
+      issues = await searchIssues(config, jql, SEARCH_CAP + 1);
+    } catch (err) {
+      process.stderr.write(`Error: ${err}\n`);
+      process.exit(1);
+    }
+  } else {
+    const spinner = p.spinner();
+    spinner.start(`Searching ${projectKey}…`);
+    try {
+      issues = await searchIssues(config, jql, SEARCH_CAP + 1);
+    } catch (err) {
+      spinner.stop("Failed");
+      p.log.error(String(err));
+      process.exit(1);
+    }
+    spinner.stop(`Found ${issues.length} issue(s)`);
   }
   const hasMore = issues.length > SEARCH_CAP;
   if (hasMore) issues = issues.slice(0, SEARCH_CAP);
   if (filters.estimated === "parent") {
     issues = await applyEstimatedParentFilter(config, issues);
   }
-  spinner.stop(`Found ${issues.length} issue(s)`);
   return { issues, hasMore };
 }
 
@@ -340,11 +349,11 @@ export async function exploreIssues(
 
   if (opts.interactive === false) {
     if (!projectKeyArg) {
-      p.log.error("--no-interactive requires a project key: jira explore <PROJECT> [scope] --no-interactive");
+      process.stderr.write("Error: --no-interactive requires a project key: jira explore <PROJECT> [scope] --no-interactive\n");
       process.exit(1);
     }
     const filters = optsToFilters(scopeArg, opts);
-    const { issues } = await fetchIssues(config, projectKeyArg.toUpperCase(), filters);
+    const { issues } = await fetchIssues(config, projectKeyArg.toUpperCase(), filters, true);
     printIssuesTable(issues, buildColDefs(config.tableWidths));
     return;
   }

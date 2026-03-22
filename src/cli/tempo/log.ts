@@ -279,7 +279,6 @@ export async function logTempo(
   const today = new Date().toISOString().slice(0, 10);
 
   const filteredWorkingDays = workingDays.filter(date => {
-    if (date > today) return false;
     const total = (existingByDate.get(date) ?? []).reduce((s, w) => s + w.timeSpentSeconds, 0);
     if (daysFilter === "unlogged") return total < loggedThreshold;
     if (daysFilter === "no-logs") return total === 0;
@@ -318,8 +317,7 @@ export async function logTempo(
             const cur = new Date(`${range.from}T12:00:00`);
             const end = new Date(`${range.to}T12:00:00`);
             while (cur <= end) {
-              const d = cur.toISOString().slice(0, 10);
-              if (d <= today) all.push(d);
+              all.push(cur.toISOString().slice(0, 10));
               cur.setDate(cur.getDate() + 1);
             }
             return all;

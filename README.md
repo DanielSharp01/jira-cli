@@ -268,14 +268,15 @@ Both commands accept flexible date arguments:
 | `week-end` | End of current week |
 | `month-end` | End of current month |
 
-When a single argument is given, it's the start date and the end date defaults to today. For a range, pass two arguments.
+When a single argument is given, it's the start date and the end date defaults to today (or the start date itself if it's in the future).
 
 ```bash
-jira tempo show month           # Start of month → today
-jira tempo show month today     # Explicit range
+jira tempo show month             # Start of month → today
+jira tempo show month today       # Explicit range
 jira tempo show 2026-03-01 2026-03-20
 jira tempo log week
-jira tempo log last-month month-end
+jira tempo log month month-end    # Current month including future days
+jira tempo log last-month month   # Last month up to start of this month
 ```
 
 #### `tempo show`
@@ -286,7 +287,7 @@ Displays logged time for the date range.
 |--------|-------------|
 | `--file <path>` | Export to a Markdown file |
 | `--stdout` | Print Markdown to stdout |
-| `--days <mode>` | `all` / `working` / `unlogged` (default) / `no-logs` |
+| `--days <mode>` | `all` / `working` (default) / `unlogged` / `no-logs` |
 | `--logged <duration>` | Threshold for "fully logged" day (default: `8h`) |
 | `--short` | Compact single-line-per-day view |
 
@@ -304,7 +305,7 @@ Logs hours for the date range. Can be driven interactively, from a file, or via 
 |--------|-------------|
 | `--file <path>` | Read entries from a Markdown file |
 | `--stdin` | Read entries from stdin |
-| `--days <mode>` | Same as `show` |
+| `--days <mode>` | `all` / `working` / `unlogged` (default) / `no-logs` |
 | `--logged <duration>` | Threshold for "fully logged" (default: `8h`) |
 | `--skip-when <mode>` | `8h` — skip fully-logged days; `any` — skip days with any log |
 | `--exact` | File day headers must exactly match the filtered working days |

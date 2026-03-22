@@ -151,10 +151,7 @@ export function parseDateRange(from?: string, to?: string): { from: string; to: 
   if (to) {
     toStr = toISODate(parseDateExpr(to));
   } else {
-    toStr = today;
-    if (fromStr > today) {
-      throw new Error(`"${from}" resolves to a future date (${fromStr}). Specify an explicit to date.`);
-    }
+    toStr = fromStr > today ? fromStr : today;
   }
 
   if (fromStr > toStr) {
