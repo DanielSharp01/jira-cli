@@ -1,12 +1,15 @@
-import type { Config } from "../lib/types.ts";
+import type { Config, JiraIssue } from "../lib/types.ts";
 import { getWorklogsForRange, getWorkingDays, createWorklog, deleteWorklog } from "../lib/tempo.ts";
 import { getIssueKeysByIds, getIssueIdsByKeys, searchIssues, getIssue, getTransitions, applyTransition, addComment } from "../lib/jira.ts";
 import type { AdfDoc } from "../lib/types.ts";
-import { gatherAllEvidence, gatherHistoricalPatterns } from "../lib/signals.ts";
+import { gatherAllEvidence, gatherHistoricalPatterns, discoverGitRepos } from "../lib/signals.ts";
 import { generateSuggestions } from "../lib/suggest.ts";
-import { trackDescription, getAllPreferredDescriptions, deleteDescriptionPref, clearAllDescriptionPrefs } from "../lib/db.ts";
+import { trackDescription, getAllPreferredDescriptions, deleteDescriptionPref, clearAllDescriptionPrefs, trackSuggestionFeedback, getScanDirs, addScanDirDb, removeScanDirDb, toggleScanDirDb, migrateScanDirsToDb } from "../lib/db.ts";
+import type { SuggestionFeedbackEntry } from "../lib/db.ts";
 import { buildGoogleAuthUrl, exchangeGoogleCode, isGoogleConnected } from "../lib/google.ts";
-import { loadConfig, saveConfig } from "../lib/config.ts";
+import { readdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { resolve, dirname } from "node:path";
 
 interface ServerOpts {
   config: Config;
@@ -35,6 +38,24 @@ function escHtml(s: string): string {
 export function startServer(opts: ServerOpts): { port: number } {
   const { config, defaultFrom, defaultTo, repoPaths, targetSecondsPerDay } = opts;
 
+  // Migrate scan dirs from config.json to database (one-time)
+  try {
+    if (config.scanDirs && config.scanDirs.length > 0 && getScanDirs().length === 0) {
+      migrateScanDirsToDb(config.scanDirs);
+    }
+  } catch { /* migration is best-effort */ }
+
+  // Helper to get fresh repo paths from DB scan dirs
+  async function getFreshRepoPaths(): Promise<string[]> {
+    try {
+      const dbDirs = getScanDirs();
+      const enabledDirs = dbDirs.filter(d => d.enabled).map(d => d.path);
+      return enabledDirs.length > 0 ? await discoverGitRepos([], enabledDirs) : repoPaths;
+    } catch {
+      return repoPaths;
+    }
+  }
+
   // Track the actual port after server starts (avoids circular ref accessing server.port inside fetch)
   let actualPort = opts.port;
 
@@ -51,9 +72,10 @@ export function startServer(opts: ServerOpts): { port: number } {
         try {
           const htmlPath = `${import.meta.dir}/index.html`;
           let html = await Bun.file(htmlPath).text();
+          const dbScanDirs = (() => { try { return getScanDirs(); } catch { return config.scanDirs ?? []; } })();
           html = html.replace(
             "/*__SERVER_CONFIG__*/",
-            `window.__CONFIG__ = ${JSON.stringify({ from: defaultFrom, to: defaultTo, targetSecondsPerDay, scanDirs: config.scanDirs ?? [] })};`
+            `window.__CONFIG__ = ${JSON.stringify({ from: defaultFrom, to: defaultTo, targetSecondsPerDay, scanDirs: dbScanDirs })};`
           );
           return new Response(html, { headers: { "Content-Type": "text/html" } });
         } catch (err) {
@@ -134,6 +156,29 @@ export function startServer(opts: ServerOpts): { port: number } {
             summary: i.fields.summary,
           }));
           return jsonResponse({ issues: result });
+        } catch (err) {
+          return errorResponse(err);
+        }
+      }
+
+      // GET /api/issues/initial?from=&to=
+      if (path === "/api/issues/initial" && req.method === "GET") {
+        const from = url.searchParams.get("from");
+        const to = url.searchParams.get("to");
+        try {
+          const [sprintIssues, recentIssues] = await Promise.all([
+            searchIssues(config, `assignee = currentUser() AND sprint in openSprints() ORDER BY updated DESC`, 30).catch(() => [] as JiraIssue[]),
+            from && to
+              ? searchIssues(config, `assignee = currentUser() AND status changed DURING ("${from}", "${to}") ORDER BY updated DESC`, 20).catch(() => [] as JiraIssue[])
+              : Promise.resolve([] as JiraIssue[]),
+          ]);
+
+          const fmt = (i: JiraIssue) => ({ key: i.key, summary: i.fields.summary, status: i.fields.status?.name ?? "" });
+          const sprint = sprintIssues.map(fmt);
+          const sprintKeys = new Set(sprint.map(i => i.key));
+          const recent = recentIssues.filter(i => !sprintKeys.has(i.key)).map(fmt);
+
+          return jsonResponse({ sprint, recent });
         } catch (err) {
           return errorResponse(err);
         }
@@ -294,7 +339,8 @@ export function startServer(opts: ServerOpts): { port: number } {
           };
 
           const targetHours = body.targetHoursPerDay ?? targetSecondsPerDay / 3600;
-          const evidence = await gatherAllEvidence(config, repoPaths, body.from, body.to);
+          const freshPaths = await getFreshRepoPaths();
+          const evidence = await gatherAllEvidence(config, freshPaths, body.from, body.to);
           const suggestions = await generateSuggestions(evidence, targetHours, body.model, body.instructions);
 
           return jsonResponse(suggestions);
@@ -321,9 +367,10 @@ export function startServer(opts: ServerOpts): { port: number } {
 
             try {
               const targetHours = body.targetHoursPerDay ?? targetSecondsPerDay / 3600;
+              const freshPaths = await getFreshRepoPaths();
 
               const evidence = await gatherAllEvidence(
-                config, repoPaths, body.from, body.to,
+                config, freshPaths, body.from, body.to,
                 (phase, message) => send("progress", { phase, message }),
               );
 
@@ -430,16 +477,59 @@ export function startServer(opts: ServerOpts): { port: number } {
         }
       }
 
-      // POST /api/config/scanDirs
-      if (path === "/api/config/scanDirs" && req.method === "POST") {
+      // GET /api/scan-dirs
+      if (path === "/api/scan-dirs" && req.method === "GET") {
         try {
-          const body = await req.json() as { scanDirs: Array<{ path: string; enabled: boolean }> };
-          const current = loadConfig();
-          current.scanDirs = body.scanDirs;
-          saveConfig(current);
-          // Update the in-memory config too
-          config.scanDirs = body.scanDirs;
-          return jsonResponse({ ok: true, scanDirs: body.scanDirs });
+          return jsonResponse({ scanDirs: getScanDirs() });
+        } catch (err) {
+          return errorResponse(err);
+        }
+      }
+
+      // POST /api/scan-dirs — add a directory
+      if (path === "/api/scan-dirs" && req.method === "POST") {
+        try {
+          const body = await req.json() as { path: string };
+          addScanDirDb(body.path);
+          return jsonResponse({ ok: true, scanDirs: getScanDirs() });
+        } catch (err) {
+          return errorResponse(err);
+        }
+      }
+
+      // DELETE /api/scan-dirs — remove a directory
+      if (path === "/api/scan-dirs" && req.method === "DELETE") {
+        try {
+          const body = await req.json() as { path: string };
+          removeScanDirDb(body.path);
+          return jsonResponse({ ok: true, scanDirs: getScanDirs() });
+        } catch (err) {
+          return errorResponse(err);
+        }
+      }
+
+      // PATCH /api/scan-dirs — toggle enabled
+      if (path === "/api/scan-dirs" && req.method === "PATCH") {
+        try {
+          const body = await req.json() as { path: string; enabled: boolean };
+          toggleScanDirDb(body.path, body.enabled);
+          return jsonResponse({ ok: true, scanDirs: getScanDirs() });
+        } catch (err) {
+          return errorResponse(err);
+        }
+      }
+
+      // GET /api/browse-dirs — list subdirectories for file browser
+      if (path === "/api/browse-dirs" && req.method === "GET") {
+        try {
+          const requestedPath = url.searchParams.get("path") || homedir();
+          const resolved = resolve(requestedPath);
+          const entries = readdirSync(resolved, { withFileTypes: true });
+          const dirs = entries
+            .filter(e => e.isDirectory() && !e.name.startsWith(".") && e.name !== "node_modules")
+            .map(e => e.name)
+            .sort((a, b) => a.localeCompare(b));
+          return jsonResponse({ current: resolved, parent: dirname(resolved), dirs });
         } catch (err) {
           return errorResponse(err);
         }
@@ -495,6 +585,19 @@ export function startServer(opts: ServerOpts): { port: number } {
             status: 500,
             headers: { "Content-Type": "text/html" },
           });
+        }
+      }
+
+      // POST /api/suggest-feedback
+      if (path === "/api/suggest-feedback" && req.method === "POST") {
+        try {
+          const body = await req.json() as { entries: SuggestionFeedbackEntry[] };
+          for (const entry of body.entries) {
+            trackSuggestionFeedback(entry);
+          }
+          return jsonResponse({ ok: true, tracked: body.entries.length });
+        } catch (err) {
+          return errorResponse(err);
         }
       }
 

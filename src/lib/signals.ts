@@ -7,6 +7,7 @@ import { resolve, dirname } from "node:path";
 import { formatDuration } from "./duration.ts";
 import { isGoogleConnected, getCalendarEvents, getChatActivity } from "./google.ts";
 import type { CalendarEvent, ChatActivity } from "./google.ts";
+import { adfToPlainText } from "./adf.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -45,7 +46,7 @@ export interface StatusTransition {
 
 export interface JiraActivitySignal {
   statusTransitions: StatusTransition[];
-  sprintIssues: Array<{ issueKey: string; summary: string; status: string; type: string; estimate: string | null }>;
+  sprintIssues: Array<{ issueKey: string; summary: string; status: string; type: string; estimate: string | null; descriptionSnippet: string | null }>;
   commentedIssues: Array<{ issueKey: string; summary: string; date: string }>;
 }
 
@@ -56,6 +57,8 @@ export interface RecurringPattern {
   occurrences: number;
   totalDays: number;
   cadence: "daily" | "weekly" | "occasional";
+  dayOfWeekDistribution: Record<string, number>;
+  primaryDays?: string[];
 }
 
 export interface HistoricalSignal {
@@ -287,13 +290,17 @@ export async function gatherJiraActivity(
   }
 
   // Sprint issues
-  const sprintIssues = sprintIssuesRaw.map(issue => ({
-    issueKey: issue.key,
-    summary: issue.fields.summary,
-    status: issue.fields.status.name,
-    type: issue.fields.issuetype.name,
-    estimate: issue.fields.timetracking?.originalEstimate ?? null,
-  }));
+  const sprintIssues = sprintIssuesRaw.map(issue => {
+    const plainText = adfToPlainText(issue.fields.description);
+    return {
+      issueKey: issue.key,
+      summary: issue.fields.summary,
+      status: issue.fields.status.name,
+      type: issue.fields.issuetype.name,
+      estimate: issue.fields.timetracking?.originalEstimate ?? null,
+      descriptionSnippet: plainText ? plainText.slice(0, 200) : null,
+    };
+  });
 
   // Find issues the user commented on in the date range
   const commentedIssues: Array<{ issueKey: string; summary: string; date: string }> = [];
@@ -405,6 +412,8 @@ export async function gatherHistoricalPatterns(
   const totalCalendarDays = Math.ceil((dayBefore.getTime() - historyFrom.getTime()) / 86400000);
   const approxWorkingDays = Math.floor(totalCalendarDays * 5 / 7);
 
+  const DOW_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
   const recurringPatterns: RecurringPattern[] = [];
   for (const [, group] of groups) {
     const occurrences = group.dates.size;
@@ -419,6 +428,29 @@ export async function gatherHistoricalPatterns(
     else if (frequency >= 0.15) cadence = "weekly"; // Appears ~1-2x/week
     else cadence = "occasional";
 
+    // Compute day-of-week distribution
+    const dayOfWeekDistribution: Record<string, number> = {};
+    for (const date of group.dates) {
+      const dow = DOW_NAMES[new Date(`${date}T12:00:00`).getDay()]!;
+      dayOfWeekDistribution[dow] = (dayOfWeekDistribution[dow] ?? 0) + 1;
+    }
+
+    // Determine primary days (days with 70%+ of occurrences)
+    let primaryDays: string[] | undefined;
+    if (cadence !== "daily") {
+      const sorted = Object.entries(dayOfWeekDistribution).sort(([, a], [, b]) => b - a);
+      let cumulative = 0;
+      const candidates: string[] = [];
+      for (const [day, count] of sorted) {
+        cumulative += count;
+        candidates.push(day);
+        if (cumulative / occurrences >= 0.7) break;
+      }
+      if (candidates.length <= 2) {
+        primaryDays = candidates;
+      }
+    }
+
     recurringPatterns.push({
       issueKey: group.issueKey,
       description: group.description,
@@ -426,6 +458,8 @@ export async function gatherHistoricalPatterns(
       occurrences,
       totalDays: approxWorkingDays,
       cadence,
+      dayOfWeekDistribution,
+      primaryDays,
     });
   }
 
@@ -593,11 +627,19 @@ export async function gatherAllEvidence(
 export function serializeEvidence(
   evidence: EvidenceBundle,
   targetHours: number,
+  userInstructions?: string,
 ): string {
   const lines: string[] = [];
 
   lines.push(`## Target: ${targetHours}h per working day`);
   lines.push("");
+
+  // User instructions placed early so LLM considers them before processing evidence
+  if (userInstructions?.trim()) {
+    lines.push(`## User Instructions (HIGHEST PRIORITY — override defaults)`);
+    lines.push(userInstructions.trim());
+    lines.push("");
+  }
 
   // Working days needing logs
   const daysNeedingLogs = evidence.workingDays.filter((date) => {
@@ -622,6 +664,61 @@ export function serializeEvidence(
   }
   lines.push("");
 
+  // Recent worklog examples (last 10 working days before target range — few-shot for style/structure)
+  if (evidence.historicalPatterns.recentWorklogs.length > 0) {
+    const recentByDate = new Map<string, typeof evidence.historicalPatterns.recentWorklogs>();
+    for (const wl of evidence.historicalPatterns.recentWorklogs) {
+      if (wl.date >= evidence.dateRange.from) continue; // Only history, not current range
+      const arr = recentByDate.get(wl.date) ?? [];
+      arr.push(wl);
+      recentByDate.set(wl.date, arr);
+    }
+    const recentDates = [...recentByDate.keys()].sort().reverse().slice(0, 10).reverse();
+    if (recentDates.length > 0) {
+      lines.push(`## Recent Worklog Examples (for style/structure reference)`);
+      for (const date of recentDates) {
+        const dow = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][
+          new Date(`${date}T12:00:00`).getDay()
+        ];
+        const wls = recentByDate.get(date)!;
+        const totalSec = wls.reduce((s, w) => s + w.durationSeconds, 0);
+        lines.push(`### ${date} (${dow}) — ${formatDuration(totalSec)}`);
+        for (const w of wls) {
+          lines.push(`- ${w.issueKey} ${formatDuration(w.durationSeconds)} "${w.description}"`);
+        }
+      }
+      lines.push("");
+    }
+  }
+
+  // Git branch → issue mapping (pre-computed for LLM)
+  if (evidence.git.length > 0) {
+    const branchIssueMap = new Map<string, { issueKeys: Set<string>; commitCount: number; dates: Set<string>; repo: string }>();
+    for (const repo of evidence.git) {
+      const repoName = repo.repoPath.split("/").pop() ?? repo.repoPath;
+      for (const c of repo.commits) {
+        if (!c.branch) continue;
+        const existing = branchIssueMap.get(c.branch) ?? { issueKeys: new Set(), commitCount: 0, dates: new Set(), repo: repoName };
+        existing.commitCount++;
+        existing.dates.add(c.date);
+        for (const k of extractIssueKeys(c.branch)) existing.issueKeys.add(k);
+        for (const k of extractIssueKeys(c.message)) existing.issueKeys.add(k);
+        branchIssueMap.set(c.branch, existing);
+      }
+    }
+    const mappings = [...branchIssueMap.entries()].filter(([, v]) => v.issueKeys.size > 0);
+    if (mappings.length > 0) {
+      lines.push(`## Git Branch → Issue Mapping`);
+      for (const [branch, info] of mappings.sort(([, a], [, b]) => b.commitCount - a.commitCount)) {
+        const dates = [...info.dates].sort();
+        const DOW_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+        const dayRange = dates.map(d => DOW_NAMES[new Date(`${d}T12:00:00`).getDay()]).join(", ");
+        lines.push(`- ${branch} → ${[...info.issueKeys].join(", ")} (${info.commitCount} commits, ${dayRange})`);
+      }
+      lines.push("");
+    }
+  }
+
   // Git activity
   if (evidence.git.length > 0) {
     lines.push(`## Git Activity`);
@@ -644,29 +741,69 @@ export function serializeEvidence(
           for (const c of commits) {
             const branchInfo = c.branch ? ` (branch: ${c.branch})` : "";
             const typeInfo = c.workType ? ` [${c.workType}]` : "";
-            const filesInfo = c.changedFiles?.length
-              ? ` → files: [${c.changedFiles.slice(0, 5).join(", ")}${c.changedFiles.length > 5 ? `, +${c.changedFiles.length - 5} more` : ""}]`
+            const fileCount = c.changedFiles?.length
+              ? ` (${c.changedFiles.length} files)`
               : "";
             lines.push(
-              `- [${c.hash.slice(0, 7)}] ${c.message}${branchInfo}${typeInfo}${filesInfo}`,
+              `- [${c.hash.slice(0, 7)}] ${c.message}${branchInfo}${typeInfo}${fileCount}`,
             );
           }
         }
       } else {
         lines.push("No commits in date range.");
       }
+      lines.push("");
+    }
+  }
 
-      if (repo.uncommitted) {
-        lines.push(`#### Uncommitted Changes (work in progress)`);
-        lines.push(
-          `- ${repo.uncommitted.modifiedFiles.length} modified files, ${repo.uncommitted.stagedFiles.length} staged`,
-        );
-        lines.push(
-          `- +${repo.uncommitted.linesAdded} / -${repo.uncommitted.linesRemoved} lines`,
-        );
-        if (repo.uncommitted.modifiedFiles.length <= 10) {
-          lines.push(`- Files: ${repo.uncommitted.modifiedFiles.join(", ")}`);
+  // Multi-day work streams (issues spanning 2+ days)
+  {
+    const issueActivity = new Map<string, { dates: Set<string>; commits: number; transitions: string[]; summary: string }>();
+
+    // Aggregate git commits by issue key across all days
+    for (const repo of evidence.git) {
+      for (const c of repo.commits) {
+        const keys = [...extractIssueKeys(c.message), ...extractIssueKeys(c.branch)];
+        for (const key of new Set(keys)) {
+          const existing = issueActivity.get(key) ?? { dates: new Set(), commits: 0, transitions: [], summary: "" };
+          existing.dates.add(c.date);
+          existing.commits++;
+          issueActivity.set(key, existing);
         }
+      }
+    }
+
+    // Add status transitions
+    for (const t of evidence.jiraActivity.statusTransitions) {
+      const existing = issueActivity.get(t.issueKey) ?? { dates: new Set(), commits: 0, transitions: [], summary: t.summary };
+      existing.dates.add(t.date);
+      existing.transitions.push(`${t.fromStatus}→${t.toStatus} on ${t.date}`);
+      if (!existing.summary) existing.summary = t.summary;
+      issueActivity.set(t.issueKey, existing);
+    }
+
+    // Enrich summaries from sprint issues
+    for (const si of evidence.jiraActivity.sprintIssues) {
+      const existing = issueActivity.get(si.issueKey);
+      if (existing && !existing.summary) existing.summary = si.summary;
+    }
+
+    // Filter to multi-day issues
+    const multiDay = [...issueActivity.entries()]
+      .filter(([, v]) => v.dates.size >= 2)
+      .sort(([, a], [, b]) => b.dates.size - a.dates.size);
+
+    if (multiDay.length > 0) {
+      const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+      lines.push(`## Multi-Day Work Streams (vary descriptions to show progression)`);
+      for (const [key, info] of multiDay.slice(0, 10)) {
+        const sortedDates = [...info.dates].sort();
+        const days = sortedDates.map(d => DOW[new Date(`${d}T12:00:00`).getDay()]).join("→");
+        const summary = info.summary ? ` "${info.summary}"` : "";
+        const parts = [`${info.dates.size} days (${days})`];
+        if (info.commits > 0) parts.push(`${info.commits} commits`);
+        if (info.transitions.length > 0) parts.push(info.transitions.join(", "));
+        lines.push(`- ${key}${summary}: ${parts.join(", ")}`);
       }
       lines.push("");
     }
@@ -691,6 +828,9 @@ export function serializeEvidence(
       lines.push(
         `- ${issue.issueKey}: "${issue.summary}" [${issue.type}, ${issue.status}]${est}`,
       );
+      if (issue.descriptionSnippet) {
+        lines.push(`  Context: "${issue.descriptionSnippet}${issue.descriptionSnippet.length >= 200 ? "..." : ""}"`);
+      }
     }
     lines.push("");
   }
@@ -704,19 +844,37 @@ export function serializeEvidence(
     lines.push("");
   }
 
-  // Recurring patterns
+  // Recurring patterns (annotate those covered by calendar events)
   if (evidence.historicalPatterns.recurringPatterns.length > 0) {
+    // Build set of issue keys that appear in calendar events
+    const calendarIssueKeys = new Set<string>();
+    if (evidence.google?.calendar) {
+      for (const e of evidence.google.calendar) {
+        for (const k of extractIssueKeys(e.summary)) calendarIssueKeys.add(k);
+      }
+    }
+    // Build set of calendar event summary keywords for fuzzy matching
+    const calendarSummaries = new Set<string>();
+    if (evidence.google?.calendar) {
+      for (const e of evidence.google.calendar) {
+        calendarSummaries.add(e.summary.toLowerCase().trim());
+      }
+    }
+
     lines.push(`## Recurring Worklog Patterns (from past 3 months)`);
     for (const p of evidence.historicalPatterns.recurringPatterns) {
       const dur = formatDuration(p.avgDurationSeconds);
+      const dayInfo = p.primaryDays ? ` on ${p.primaryDays.join("/")}` : "";
+      const coveredByCalendar = calendarIssueKeys.has(p.issueKey) ||
+        calendarSummaries.has(p.description.toLowerCase().trim());
+      const calTag = coveredByCalendar ? " [COVERED BY CALENDAR — skip if calendar event exists on that day]" : "";
       lines.push(
-        `- ${p.issueKey} "${p.description}" — ${dur} avg, ${p.cadence} (${p.occurrences}/${p.totalDays} days)`,
+        `- ${p.issueKey} "${p.description}" — ${dur} avg, ${p.cadence}${dayInfo} (${p.occurrences}/${p.totalDays} days)${calTag}`,
       );
     }
     lines.push("");
   }
 
-  // Google Calendar events
   // Google Calendar events
   if (evidence.google?.calendar && evidence.google.calendar.length > 0) {
     lines.push(`## Calendar Events`);
@@ -745,22 +903,18 @@ export function serializeEvidence(
     lines.push("");
   }
 
-  // Google Chat activity
+  // Google Chat activity (condensed)
   if (evidence.google?.chat && evidence.google.chat.length > 0) {
     lines.push(`## Chat Activity`);
-    const byDate = new Map<string, ChatActivity[]>();
+    const byDate = new Map<string, { spaces: number; messages: number }>();
     for (const c of evidence.google.chat) {
-      const arr = byDate.get(c.date) ?? [];
-      arr.push(c);
-      byDate.set(c.date, arr);
+      const existing = byDate.get(c.date) ?? { spaces: 0, messages: 0 };
+      existing.spaces++;
+      existing.messages += c.messageCount;
+      byDate.set(c.date, existing);
     }
-    for (const [date, activities] of [...byDate].sort(([a], [b]) =>
-      a.localeCompare(b),
-    )) {
-      lines.push(`### ${date}`);
-      for (const a of activities) {
-        lines.push(`- "${a.spaceName}" channel: ${a.messageCount} messages`);
-      }
+    for (const [date, stats] of [...byDate].sort(([a], [b]) => a.localeCompare(b))) {
+      lines.push(`- ${date}: ${stats.messages} messages across ${stats.spaces} channels`);
     }
     lines.push("");
   }
@@ -808,6 +962,33 @@ export function serializeEvidence(
     }
   }
   // ------------------------
+
+  // Historical time distribution per project
+  if (evidence.historicalPatterns.recentWorklogs.length > 0) {
+    const projectStats = new Map<string, { totalSeconds: number; daysActive: Set<string>; entryCount: number }>();
+    for (const wl of evidence.historicalPatterns.recentWorklogs) {
+      const projectKey = wl.issueKey.split("-")[0]!;
+      const stats = projectStats.get(projectKey) ?? { totalSeconds: 0, daysActive: new Set(), entryCount: 0 };
+      stats.totalSeconds += wl.durationSeconds;
+      stats.daysActive.add(wl.date);
+      stats.entryCount++;
+      projectStats.set(projectKey, stats);
+    }
+
+    const sorted = [...projectStats.entries()]
+      .filter(([, s]) => s.daysActive.size >= 3) // Only show projects with meaningful history
+      .sort(([, a], [, b]) => b.totalSeconds - a.totalSeconds);
+
+    if (sorted.length > 0) {
+      lines.push(`## Typical Time Distribution (guide for allocation)`);
+      for (const [proj, stats] of sorted.slice(0, 8)) {
+        const avgDailyHours = (stats.totalSeconds / stats.daysActive.size / 3600).toFixed(1);
+        const avgEntryDur = Math.round(stats.totalSeconds / stats.entryCount);
+        lines.push(`- ${proj}: ~${avgDailyHours}h/day when active, typical entry ${formatDuration(avgEntryDur)} (active ${stats.daysActive.size} days)`);
+      }
+      lines.push("");
+    }
+  }
 
   if (allKeys.size > 0) {
     lines.push(`## Known Issue Keys (ONLY use these)`);

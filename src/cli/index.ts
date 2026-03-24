@@ -244,7 +244,7 @@ export function buildProgram(): Command {
     .option("--repo <paths...>", "Additional git repos to scan")
     .option("--no-git", "Skip git scanning")
     .option("--hours <duration>", "Target hours per day (default: 8h)")
-    .option("--model <name>", "Override LLM model (default: gpt-4o-mini)")
+    .option("--model <name>", "Override LLM model (default: gpt-5.4-mini)")
     .option("--dry-run", "Show suggestions without submitting")
     .action(
       async (

@@ -7,6 +7,7 @@ import { discoverGitRepos, gatherAllEvidence } from "../../lib/signals.ts";
 import { generateSuggestions } from "../../lib/suggest.ts";
 import { getIssueIdsByKeys } from "../../lib/jira.ts";
 import { createWorklog, deleteWorklog, getWorklogsForRange } from "../../lib/tempo.ts";
+import { trackDescription, trackSuggestionFeedback } from "../../lib/db.ts";
 import type { SuggestResponse, DaySuggestions } from "../../lib/suggest-schemas.ts";
 import type { WorklogEntry } from "../../lib/types.ts";
 
@@ -132,6 +133,7 @@ async function submitPlans(
           startTime: `${hh}:${mm}:${ss}`,
           description: entry.description,
         });
+        try { trackDescription(entry.issueKey, entry.description); } catch { /* db is optional */ }
         cursorSeconds += entry.durationSeconds;
       }
     }
@@ -141,6 +143,29 @@ async function submitPlans(
     p.log.error(String(err));
     process.exit(1);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Feedback tracking
+// ---------------------------------------------------------------------------
+
+function recordFeedback(days: DaySuggestions[], action: "accepted" | "rejected"): void {
+  try {
+    for (const day of days) {
+      for (const entry of day.entries) {
+        trackSuggestionFeedback({
+          date: day.date,
+          issueKey: entry.issueKey,
+          suggestedDescription: entry.description,
+          suggestedDurationSeconds: parseDuration(entry.durationHuman),
+          finalDescription: action === "accepted" ? entry.description : null,
+          finalDurationSeconds: action === "accepted" ? parseDuration(entry.durationHuman) : null,
+          action,
+          confidence: entry.confidence,
+        });
+      }
+    }
+  } catch { /* feedback tracking is optional */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -345,6 +370,7 @@ export async function suggestTempo(
     }
 
     await submitPlans(config, plans, existingWorklogsRaw);
+    recordFeedback(suggestions.days, "accepted");
 
     const totalLogged = plans.reduce((s, p) => s + p.entries.reduce((s2, e) => s2 + e.durationSeconds, 0), 0);
     console.log(`\n${pc.green("All logs submitted.")} Total: ${formatDuration(totalLogged)} across ${plans.length} day(s)`);
@@ -353,6 +379,7 @@ export async function suggestTempo(
 
   // Review per day
   const acceptedDays: DaySuggestions[] = [];
+  const rejectedDays: DaySuggestions[] = [];
   for (const day of suggestions.days) {
     console.log();
     console.log(`  ${pc.bold(day.date)} (${dayLabel(day.date)})`);
@@ -376,6 +403,8 @@ export async function suggestTempo(
 
     if (dayAction === "accept") {
       acceptedDays.push(day);
+    } else {
+      rejectedDays.push(day);
     }
   }
 
@@ -396,6 +425,8 @@ export async function suggestTempo(
   }
 
   await submitPlans(config, plans, existingWorklogsRaw);
+  recordFeedback(acceptedDays, "accepted");
+  recordFeedback(rejectedDays, "rejected");
 
   const totalLogged = plans.reduce((s, p) => s + p.entries.reduce((s2, e) => s2 + e.durationSeconds, 0), 0);
   console.log(`\n${pc.green("All logs submitted.")} Total: ${formatDuration(totalLogged)} across ${acceptedDays.length} day(s)`);
