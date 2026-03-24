@@ -1,0 +1,1505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tempo Timesheet</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: { extend: {
+        colors: {
+          surface: { light: '#ffffff', dark: '#111827' },
+          suggestion: { light: '#eff6ff', dark: '#1e293b' },
+        },
+        fontFamily: { sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'] },
+        boxShadow: { grid: '0 1px 3px 0 rgb(0 0 0 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.06)' },
+      }}
+    }
+  </script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes pulse-subtle { 0%, 100% { opacity: 1; } 50% { opacity: .7; } }
+    .spinner { animation: spin .7s linear infinite; }
+    .fade-in { animation: fadeIn .2s ease-out; }
+    .pulse-subtle { animation: pulse-subtle 2s ease-in-out infinite; }
+    .grid-scroll::-webkit-scrollbar { height: 6px; }
+    .grid-scroll::-webkit-scrollbar-track { background: transparent; }
+    .grid-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 99px; }
+    .dark .grid-scroll::-webkit-scrollbar-thumb { background: #374151; }
+    /* Tooltip — rendered via JS into a fixed-position element to avoid overflow clipping */
+    #tooltip { position: fixed; z-index: 9999; pointer-events: none; max-width: 240px; padding: 6px 10px; border-radius: 6px; font-size: 11px; line-height: 1.4; white-space: normal; word-wrap: break-word; background: #1e293b; color: #f8fafc; box-shadow: 0 4px 12px rgb(0 0 0/.18); opacity: 0; transition: opacity .12s; }
+    #tooltip.visible { opacity: 1; }
+    .dark #tooltip { background: #f1f5f9; color: #0f172a; }
+    /* Cell hover reveal */
+    .cell-actions { opacity: 0; transition: opacity .15s; }
+    tr:hover .cell-actions, td:hover .cell-actions { opacity: 1; }
+    /* Toast notifications */
+    @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    @keyframes slideOut { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100%); opacity: 0; } }
+    .toast-in { animation: slideIn .25s ease-out; }
+    .toast-out { animation: slideOut .2s ease-in forwards; }
+    /* Cell inline spinner */
+    .cell-spinner { width: 14px; height: 14px; border: 2px solid #e2e8f0; border-top-color: #6366f1; border-radius: 50%; animation: spin .6s linear infinite; }
+    .dark .cell-spinner { border-color: #374151; border-top-color: #818cf8; }
+  </style>
+</head>
+<body class="bg-slate-50 dark:bg-gray-950 text-slate-800 dark:text-slate-200 h-screen overflow-hidden font-sans antialiased transition-colors duration-200">
+
+  <div id="app" class="max-w-[1440px] mx-auto px-5 py-4 h-full flex flex-col">
+
+    <!-- Header -->
+    <header id="header" class="mb-3 flex-shrink-0"></header>
+
+    <!-- AI Panel -->
+    <div id="ai-panel" class="mb-3 flex-shrink-0 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-800 rounded-xl shadow-grid overflow-hidden fade-in">
+      <div class="flex items-center justify-between px-5 py-3 border-b border-slate-100 dark:border-gray-800 bg-slate-50/50 dark:bg-gray-900/50">
+        <div class="flex items-center gap-2">
+          <svg class="w-4 h-4 text-sky-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z"/></svg>
+          <span class="text-sm font-semibold text-slate-700 dark:text-slate-300">AI Assistant</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <select id="suggest-scope" class="text-xs font-medium border border-slate-200 dark:border-gray-700 rounded-lg px-2.5 py-1.5 bg-white dark:bg-gray-800 text-slate-600 dark:text-slate-400 focus:ring-2 focus:ring-sky-500 outline-none cursor-pointer">
+            <option value="unlogged">Unlogged days</option>
+            <option value="all">All days</option>
+          </select>
+          <button id="suggest-btn" onclick="runSuggest()" class="inline-flex items-center gap-1.5 px-4 py-1.5 text-sm font-semibold text-white bg-gradient-to-r from-sky-500 to-indigo-500 hover:from-sky-600 hover:to-indigo-600 rounded-lg shadow-sm transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none active:scale-[.97]">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12h15m0 0l-6.75-6.75M19.5 12l-6.75 6.75"/></svg>
+            Generate
+          </button>
+          <button onclick="acceptAllSuggestions()" class="px-3 py-1.5 text-xs font-medium rounded-lg border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 transition">Accept All</button>
+        </div>
+      </div>
+      <div class="px-5 py-3">
+        <textarea id="ai-instructions" rows="2" placeholder='e.g. "Fill March with my usual pattern. I was on vacation 17-18. Mondays are heavy on INT-2 meetings."'
+          class="w-full text-sm border-0 bg-transparent text-slate-800 dark:text-slate-200 placeholder-slate-400 dark:placeholder-slate-600 focus:ring-0 outline-none resize-y leading-relaxed"></textarea>
+      </div>
+      <div id="progress-area" class="hidden px-5 py-2.5 border-t border-slate-100 dark:border-gray-800 bg-sky-50/50 dark:bg-sky-950/20">
+        <div class="flex items-center gap-2.5">
+          <div class="w-3.5 h-3.5 border-2 border-sky-200 dark:border-sky-800 border-t-sky-500 rounded-full spinner"></div>
+          <span id="progress-text" class="text-xs font-medium text-sky-700 dark:text-sky-400"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Preferences Panel (collapsible) -->
+    <div id="prefs-panel" class="hidden mb-3 flex-shrink-0 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-800 rounded-xl shadow-grid overflow-hidden fade-in">
+      <div class="flex items-center justify-between px-5 py-3 border-b border-slate-100 dark:border-gray-800 bg-slate-50/50 dark:bg-gray-900/50">
+        <div class="flex items-center gap-2">
+          <svg class="w-4 h-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 010-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.28z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+          <span class="text-sm font-semibold text-slate-700 dark:text-slate-300">Settings</span>
+        </div>
+        <button onclick="togglePrefs()" class="text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition">Close</button>
+      </div>
+      <div class="max-h-[300px] overflow-y-auto">
+        <!-- Scan Directories -->
+        <div class="px-5 py-3 border-b border-slate-100 dark:border-gray-800">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Scan Directories</span>
+          </div>
+          <div id="scan-dirs-list" class="text-sm"></div>
+          <div class="flex items-center gap-2 mt-2">
+            <input id="new-scan-dir" class="flex-1 text-xs border border-slate-200 dark:border-gray-700 rounded-md px-2.5 py-1.5 bg-white dark:bg-gray-800 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="/home/user/Projects">
+            <button onclick="addScanDir()" class="text-xs px-2.5 py-1.5 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition">Add</button>
+          </div>
+        </div>
+        <!-- Google Workspace -->
+        <div class="px-5 py-3 border-b border-slate-100 dark:border-gray-800">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Google Workspace</span>
+            <div id="google-status"></div>
+          </div>
+          <p class="text-[11px] text-slate-400 dark:text-slate-600 mt-1">Calendar events and Chat activity are used as evidence for meeting-related worklogs.</p>
+        </div>
+        <!-- Learned Descriptions -->
+        <div class="border-b border-slate-100 dark:border-gray-800 last:border-0">
+          <div class="flex items-center justify-between px-5 py-3">
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Learned Descriptions</span>
+              <span id="prefs-count" class="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-slate-200 dark:bg-gray-700 text-slate-500 dark:text-slate-400"></span>
+            </div>
+            <button onclick="clearPrefs()" class="text-[10px] text-red-500 hover:text-red-700 dark:hover:text-red-400 transition">Clear All</button>
+          </div>
+          <div id="prefs-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Grid -->
+    <div class="grid-scroll overflow-auto flex-1 min-h-0 rounded-xl border border-slate-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-grid fade-in relative">
+      <table id="grid" class="w-full border-collapse min-w-[700px]"><tbody></tbody></table>
+      <div id="empty-state" class="hidden absolute inset-0 top-[42px] flex items-center justify-center pointer-events-none">
+        <div class="flex flex-col items-center gap-2 text-center">
+          <svg class="w-10 h-10 text-slate-300 dark:text-slate-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          <p class="text-sm text-slate-400 dark:text-slate-600">No worklogs for this period</p>
+          <p class="text-xs text-slate-400 dark:text-slate-600">Click <b>+ Add Issue</b> or <b>Generate</b> to get started</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="flex items-center gap-3 mt-3 flex-shrink-0 flex-wrap" id="footer"></div>
+    <div id="search-area" class="flex-shrink-0"></div>
+  </div>
+
+  <!-- Issue detail panel (slide-out right) -->
+  <div id="issue-backdrop" class="fixed inset-0 bg-black/20 dark:bg-black/40 z-40 hidden" onclick="closeIssue()"></div>
+  <div id="issue-panel" class="fixed top-0 right-0 h-full w-[380px] bg-white dark:bg-gray-900 border-l border-slate-200 dark:border-gray-800 shadow-2xl z-50 translate-x-full transition-transform duration-200 ease-out flex flex-col">
+    <div id="issue-panel-content" class="flex-1 overflow-y-auto"></div>
+  </div>
+
+  <!-- Loading overlay -->
+  <div id="loading" class="fixed inset-0 bg-white/70 dark:bg-gray-950/70 backdrop-blur-sm flex items-center justify-center z-50 flex-col gap-3 hidden">
+    <div class="w-10 h-10 border-[3px] border-slate-200 dark:border-gray-700 border-t-indigo-500 rounded-full spinner"></div>
+    <p id="loading-text" class="text-slate-500 dark:text-slate-400 text-sm font-medium">Loading...</p>
+  </div>
+
+  <!-- Tooltip element (fixed position, avoids overflow clipping) -->
+  <div id="tooltip"></div>
+
+  <!-- Toast container -->
+  <div id="toast-container" class="fixed bottom-5 right-5 z-[9999] flex flex-col gap-2 pointer-events-none"></div>
+
+  <script>/*__SERVER_CONFIG__*/</script>
+  <script>
+    // =========================================================================
+    // State
+    // =========================================================================
+    const state = {
+      from: window.__CONFIG__?.from ?? new Date().toISOString().slice(0, 10),
+      to: window.__CONFIG__?.to ?? new Date().toISOString().slice(0, 10),
+      targetSecondsPerDay: window.__CONFIG__?.targetSecondsPerDay ?? 28800,
+      viewMode: 'week',
+      workingDays: [],
+      worklogs: [],
+      allSuggestions: [], // accumulated across runs: [{date, entries:[...]}, ...]
+      rejectedSuggestions: new Set(),
+      extraIssueKeys: [],
+      editingCell: null,
+      loading: false,
+      // Draft mode
+      drafts: new Map(), // "issueKey:date" -> {issueKey, date, seconds, description}
+      pendingDeletes: new Set(), // tempoWorklogIds to delete on submit
+      // Issue summaries
+      issueSummaries: new Map(), // issueKey -> summary string
+      // Evidence from last suggest run
+      evidence: null, // { commits, repos, transitions, sprintIssues, patterns, comments }
+      // Keyboard
+      focusedCell: null, // { row, col }
+      // Config
+      scanDirs: window.__CONFIG__?.scanDirs ?? [], // Array<{path, enabled}>
+
+    };
+
+    // Cells currently showing inline spinner (key:date → true)
+    const cellLoading = new Set();
+
+    // Dark mode
+    if (localStorage.getItem('darkMode') === 'true' || (!localStorage.getItem('darkMode') && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+      document.documentElement.classList.add('dark');
+    }
+    function toggleDark() {
+      document.documentElement.classList.toggle('dark');
+      localStorage.setItem('darkMode', document.documentElement.classList.contains('dark'));
+      render();
+    }
+
+    // =========================================================================
+    // Toast notifications
+    // =========================================================================
+    function toast(message, type = 'success', duration = 3500) {
+      const container = document.getElementById('toast-container');
+      const el = document.createElement('div');
+      const colors = {
+        success: 'bg-emerald-600 text-white',
+        error: 'bg-red-600 text-white',
+        info: 'bg-sky-600 text-white',
+        warning: 'bg-amber-500 text-white',
+      };
+      el.className = `pointer-events-auto px-4 py-2.5 rounded-lg shadow-lg text-sm font-medium ${colors[type] || colors.info} toast-in flex items-center gap-2 max-w-sm`;
+      const icons = {
+        success: '<svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/></svg>',
+        error: '<svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg>',
+        info: '<svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z"/></svg>',
+        warning: '<svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/></svg>',
+      };
+      el.innerHTML = `${icons[type] || ''}${esc(message)}`;
+      container.appendChild(el);
+      setTimeout(() => { el.classList.remove('toast-in'); el.classList.add('toast-out'); el.addEventListener('animationend', () => el.remove()); }, duration);
+    }
+
+    // =========================================================================
+    // Date range helpers
+    // =========================================================================
+    function getWeekRange(dateStr) {
+      const d = new Date(`${dateStr}T12:00:00`);
+      const dow = d.getDay();
+      const mon = new Date(d); mon.setDate(d.getDate() - (dow === 0 ? 6 : dow - 1));
+      const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
+      return { from: mon.toISOString().slice(0, 10), to: sun.toISOString().slice(0, 10) };
+    }
+    function getMonthRange(dateStr) {
+      const d = new Date(`${dateStr}T12:00:00`);
+      const first = new Date(d.getFullYear(), d.getMonth(), 1);
+      const last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+      return { from: first.toISOString().slice(0, 10), to: last.toISOString().slice(0, 10) };
+    }
+    function isDateInRange(date, from, to) { return date >= from && date <= to; }
+    function calcStartTime(date) {
+      // Calculate next available start time for a day based on existing worklogs
+      const kept = state.worklogs.filter(w => w.startDate === date && !state.pendingDeletes.has(w.tempoWorklogId));
+      let cursor = 9 * 3600; // start at 09:00
+      for (const wl of kept) {
+        const [h, m, s] = wl.startTime.split(':').map(Number);
+        const end = h * 3600 + m * 60 + s + wl.timeSpentSeconds;
+        if (end > cursor) cursor = end;
+      }
+      // Also account for drafts already pushed today
+      for (const [, d] of state.drafts) {
+        if (d.date === date && d._startCursor) {
+          const end = d._startCursor + d.seconds;
+          if (end > cursor) cursor = end;
+        }
+      }
+      return cursor;
+    }
+    function cursorToTime(cursor) {
+      const hh = String(Math.floor(cursor / 3600)).padStart(2, '0');
+      const mm = String(Math.floor((cursor % 3600) / 60)).padStart(2, '0');
+      return `${hh}:${mm}:00`;
+    }
+
+    function totalDraftCount() {
+      return [...state.drafts.values()].reduce((sum, arr) => sum + arr.length, 0);
+    }
+
+    // Beforeunload guard
+    // Beforeunload guard
+    window.addEventListener('beforeunload', (e) => {
+      if (totalDraftCount() > 0 || state.pendingDeletes.size > 0) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    });
+
+    // =========================================================================
+    // Utils
+    // =========================================================================
+    function parseDur(input) {
+      const m = input.trim().toLowerCase().match(/^(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m)?$/);
+      if (m && (m[1] || m[2])) return Math.round((parseFloat(m[1] || "0") * 3600) + (parseFloat(m[2] || "0") * 60));
+      throw new Error("Invalid duration");
+    }
+    function fmtDur(s) {
+      if (!s || s <= 0) return "";
+      const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+      if (h > 0 && m > 0) return `${h}h${m}m`;
+      if (h > 0) return `${h}h`;
+      return `${m}m`;
+    }
+    const DAYS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+    const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    function dayLabel(d) { return DAYS[new Date(`${d}T12:00:00`).getDay()]; }
+    function shortDate(d) { return new Date(`${d}T12:00:00`).getDate(); }
+    function fullDate(d) { return `${dayLabel(d)} ${shortDate(d)}`; }
+    function rangeLabel(f, t) {
+      const df = new Date(`${f}T12:00:00`), dt = new Date(`${t}T12:00:00`);
+      if (df.getMonth() === dt.getMonth()) return `${MONTHS[df.getMonth()]} ${df.getDate()} \u2013 ${dt.getDate()}, ${dt.getFullYear()}`;
+      return `${MONTHS[df.getMonth()]} ${df.getDate()} \u2013 ${MONTHS[dt.getMonth()]} ${dt.getDate()}, ${dt.getFullYear()}`;
+    }
+    function esc(s) { return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
+    const todayStr = () => new Date().toISOString().slice(0, 10);
+
+    // Tooltip (fixed position to avoid overflow clipping)
+    const tooltipEl = document.getElementById('tooltip');
+    document.addEventListener('mouseover', (e) => {
+      const target = e.target.closest('[data-tip]');
+      if (!target) { tooltipEl.classList.remove('visible'); return; }
+      const text = target.getAttribute('data-tip');
+      if (!text) { tooltipEl.classList.remove('visible'); return; }
+      tooltipEl.textContent = text;
+      tooltipEl.classList.add('visible');
+      const rect = target.getBoundingClientRect();
+      const tipRect = tooltipEl.getBoundingClientRect();
+      let left = rect.left + rect.width / 2 - tipRect.width / 2;
+      let top = rect.top - tipRect.height - 8;
+      // Keep within viewport
+      if (left < 8) left = 8;
+      if (left + tipRect.width > window.innerWidth - 8) left = window.innerWidth - tipRect.width - 8;
+      if (top < 8) { top = rect.bottom + 8; } // flip below if no room above
+      tooltipEl.style.left = left + 'px';
+      tooltipEl.style.top = top + 'px';
+    });
+    document.addEventListener('mouseout', (e) => {
+      const target = e.target.closest('[data-tip]');
+      if (target) tooltipEl.classList.remove('visible');
+    });
+
+    // =========================================================================
+    // API
+    // =========================================================================
+    function showLoading(msg) { state.loading = true; document.getElementById("loading-text").textContent = msg; document.getElementById("loading").classList.remove("hidden"); }
+    function hideLoading() { state.loading = false; document.getElementById("loading").classList.add("hidden"); }
+    async function api(path, opts = {}) {
+      const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      return data;
+    }
+    async function fetchData() {
+      showLoading("Loading worklogs...");
+      try {
+        const [wl, wd] = await Promise.all([
+          api(`/api/worklogs?from=${state.from}&to=${state.to}`),
+          api(`/api/working-days?from=${state.from}&to=${state.to}`),
+        ]);
+        state.worklogs = wl.worklogs;
+        state.workingDays = wd.workingDays;
+        state.targetSecondsPerDay = wd.targetSecondsPerDay;
+        // Capture issue summaries
+        for (const w of wl.worklogs) {
+          if (w.issueSummary) state.issueSummaries.set(w.issueKey, w.issueSummary);
+        }
+      } catch (err) { toast("Failed to load: " + err.message, 'error'); }
+      hideLoading();
+      render();
+    }
+
+    // =========================================================================
+    // Grid data
+    // =========================================================================
+    function getAllDates() {
+      const dates = [], cur = new Date(`${state.from}T12:00:00`), end = new Date(`${state.to}T12:00:00`);
+      while (cur <= end) { dates.push(cur.toISOString().slice(0, 10)); cur.setDate(cur.getDate() + 1); }
+      return dates;
+    }
+    function buildGridData() {
+      const dates = getAllDates(), grid = new Map();
+      for (const wl of state.worklogs) {
+        if (!grid.has(wl.issueKey)) grid.set(wl.issueKey, new Map());
+        const dm = grid.get(wl.issueKey);
+        const cell = dm.get(wl.startDate) || { seconds: 0, entries: [], source: "existing" };
+        cell.seconds += wl.timeSpentSeconds; cell.entries.push(wl); dm.set(wl.startDate, cell);
+      }
+      for (const day of state.allSuggestions) {
+        for (const entry of day.entries) {
+          if (state.rejectedSuggestions.has(`${day.date}:${entry.issueKey}`)) continue;
+          if (!grid.has(entry.issueKey)) grid.set(entry.issueKey, new Map());
+          const dm = grid.get(entry.issueKey);
+          try {
+            const parsedSeconds = parseDur(entry.durationHuman);
+            const cell = dm.get(day.date);
+            if (cell && cell.source === "suggestion") {
+              cell.seconds += parsedSeconds;
+              cell.entries.push(entry);
+              cell.reasoning = cell.reasoning + " | " + entry.reasoning;
+            } else if (!cell) {
+              dm.set(day.date, { seconds: parsedSeconds, entries: [entry], source: "suggestion", confidence: entry.confidence, reasoning: entry.reasoning });
+            }
+          } catch {}
+        }
+      }
+      // Overlay drafts (overrides suggestions and existing)
+      for (const [dk, drafts] of state.drafts) {
+        if (!drafts || drafts.length === 0) continue;
+        const issueKey = drafts[0].issueKey;
+        const date = drafts[0].date;
+        if (!grid.has(issueKey)) grid.set(issueKey, new Map());
+        const dm = grid.get(issueKey);
+        const totalSeconds = drafts.reduce((sum, d) => sum + d.seconds, 0);
+        dm.set(date, { seconds: totalSeconds, entries: drafts, source: "draft" });
+      }
+      for (const key of state.extraIssueKeys) if (!grid.has(key)) grid.set(key, new Map());
+      return { grid, dates };
+    }
+
+    // =========================================================================
+    // Render
+    // =========================================================================
+    function render() {
+      const { grid, dates } = buildGridData();
+      const wdSet = new Set(state.workingDays);
+      const target = state.targetSecondsPerDay;
+      const isMonth = state.viewMode === 'month';
+      const dark = document.documentElement.classList.contains('dark');
+      const today = todayStr();
+
+      // --- Header ---
+      document.getElementById("header").innerHTML = `
+        <div class="flex items-center justify-between flex-wrap gap-4">
+          <div class="flex items-center gap-1.5">
+            <button onclick="navigate(${isMonth ? "'-1m'" : -7})" class="w-9 h-9 flex items-center justify-center rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-slate-50 dark:hover:bg-gray-800 transition text-slate-500 dark:text-slate-400">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5"/></svg>
+            </button>
+            <div class="min-w-[220px] text-center">
+              <h1 class="text-lg font-bold tracking-tight">${rangeLabel(state.from, state.to)}</h1>
+            </div>
+            <button onclick="navigate(${isMonth ? "'1m'" : 7})" class="w-9 h-9 flex items-center justify-center rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-slate-50 dark:hover:bg-gray-800 transition text-slate-500 dark:text-slate-400">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/></svg>
+            </button>
+          </div>
+          <div class="flex items-center gap-2">
+            <button onclick="goThisWeek()" class="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-slate-50 dark:hover:bg-gray-800 transition">Today</button>
+            <div class="flex rounded-lg border border-slate-200 dark:border-gray-700 overflow-hidden">
+              <button onclick="setView('week')" class="px-3.5 py-1.5 text-xs font-semibold transition-all ${state.viewMode==='week' ? 'bg-indigo-600 text-white shadow-inner' : 'bg-white dark:bg-gray-900 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-gray-800'}">Week</button>
+              <button onclick="setView('month')" class="px-3.5 py-1.5 text-xs font-semibold transition-all border-l border-slate-200 dark:border-gray-700 ${state.viewMode==='month' ? 'bg-indigo-600 text-white shadow-inner' : 'bg-white dark:bg-gray-900 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-gray-800'}">Month</button>
+            </div>
+            <div class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-gray-800">
+              <svg class="w-3.5 h-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              <span class="text-xs font-semibold text-slate-500 dark:text-slate-400">${fmtDur(target)}/day</span>
+            </div>
+            ${totalDraftCount() > 0 ? `<div class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-100 dark:bg-emerald-900/30">
+              <div class="w-2 h-2 rounded-full bg-emerald-500 pulse-subtle"></div>
+              <span class="text-xs font-semibold text-emerald-700 dark:text-emerald-400">${totalDraftCount()} draft${totalDraftCount() !== 1 ? 's' : ''}</span>
+            </div>` : ''}
+            <button onclick="togglePrefs()" class="w-9 h-9 flex items-center justify-center rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-slate-50 dark:hover:bg-gray-800 transition" title="Preferences">
+              <svg class="w-4 h-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 010-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.28z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            </button>
+            <button onclick="toggleDark()" class="w-9 h-9 flex items-center justify-center rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-slate-50 dark:hover:bg-gray-800 transition" title="Toggle theme">
+              ${dark ? '<svg class="w-4 h-4 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386l-1.591 1.591M21 12h-2.25m-.386 6.364l-1.591-1.591M12 18.75V21m-4.773-4.227l-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z"/></svg>'
+                    : '<svg class="w-4 h-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z"/></svg>'}
+            </button>
+          </div>
+        </div>
+      `;
+
+      // --- Grid ---
+      const issueKeys = [...grid.keys()].sort();
+      const colW = isMonth ? 'w-[52px] min-w-[52px]' : 'w-[100px] min-w-[100px]';
+      const hBase = 'px-2 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 bg-slate-50 dark:bg-gray-900 border-b border-slate-200 dark:border-gray-800 sticky top-0 z-10 select-none';
+
+      let html = `<thead><tr>
+        <th class="${hBase} text-left pl-4 sticky left-0 z-20 w-[130px] min-w-[130px] bg-slate-50 dark:bg-gray-900">Issue</th>`;
+      for (const d of dates) {
+        const wd = wdSet.has(d);
+        const isToday = d === today;
+        html += `<th class="${hBase} ${colW} text-center ${!wd ? 'opacity-40' : ''} ${isToday ? 'bg-indigo-50 dark:bg-indigo-950/30' : ''}">
+          ${isMonth ? `<div class="leading-tight">${dayLabel(d)}</div><div class="text-sm font-bold ${isToday ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-600 dark:text-slate-300'}">${shortDate(d)}</div>`
+                   : `<div class="${isToday ? 'text-indigo-600 dark:text-indigo-400 font-bold' : ''}">${fullDate(d)}</div>`}
+        </th>`;
+      }
+      html += `<th class="${hBase} w-[70px] min-w-[70px] text-center bg-slate-100 dark:bg-gray-800/80">Total</th></tr></thead><tbody>`;
+
+      // Empty state overlay
+      document.getElementById("empty-state").classList.toggle("hidden", issueKeys.length > 0);
+
+      for (const key of issueKeys) {
+        const dm = grid.get(key);
+        let rowTotal = 0;
+        html += `<tr class="group hover:bg-slate-50/50 dark:hover:bg-gray-800/30 transition-colors">
+          <td class="px-3 py-1.5 text-left border-b border-slate-100 dark:border-gray-800/60 sticky left-0 z-[5] bg-white dark:bg-gray-900 group-hover:bg-slate-50/50 dark:group-hover:bg-gray-800/30 transition-colors cursor-pointer" onclick="openIssue('${esc(key)}')" data-tip="${esc(state.issueSummaries.get(key) ?? 'Click for details')}">
+            <div class="font-semibold text-[12px] text-indigo-600 dark:text-indigo-400 tracking-wide hover:underline">${esc(key)}</div>
+            ${state.issueSummaries.get(key) ? `<div class="text-[10px] text-slate-400 dark:text-slate-500 truncate max-w-[120px] leading-tight">${esc(state.issueSummaries.get(key))}</div>` : ''}
+          </td>`;
+        const rowIdx = issueKeys.indexOf(key);
+        for (let ci = 0; ci < dates.length; ci++) {
+          const d = dates[ci];
+          const cell = dm.get(d);
+          const isToday = d === today;
+          const todayBg = isToday ? 'bg-indigo-50/40 dark:bg-indigo-950/10' : '';
+          const isFocused = state.focusedCell?.row === rowIdx && state.focusedCell?.col === ci;
+          const focusRing = isFocused ? 'ring-2 ring-indigo-500 ring-inset z-[6]' : '';
+          const fcAttr = `data-fc="${rowIdx}-${ci}"`;
+          if (state.editingCell === `${key}:${d}`) {
+            html += renderEditCell(key, d, cell, colW);
+          } else if (cell) {
+            rowTotal += cell.seconds;
+            html += renderCell(key, d, cell, isMonth, colW, todayBg, focusRing, fcAttr);
+          } else {
+            html += `<td class="px-1 py-2 text-center border-b border-slate-100 dark:border-gray-800/60 ${colW} ${todayBg} ${focusRing} cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-950/20 transition-colors" ${fcAttr} onclick="startEdit('${key}','${d}')"></td>`;
+          }
+        }
+        html += `<td class="px-2 py-2 text-center text-xs font-bold border-b border-slate-100 dark:border-gray-800/60 bg-slate-50/60 dark:bg-gray-800/40 text-slate-700 dark:text-slate-300">${fmtDur(rowTotal)}</td></tr>`;
+      }
+
+      // Totals row
+      html += `<tr><td class="px-3 py-2.5 text-left text-xs font-bold text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-gray-800/60 border-t-2 border-slate-200 dark:border-gray-700 sticky left-0 z-[5]">Day Total</td>`;
+      let grandTotal = 0;
+      for (const d of dates) {
+        let dayTotal = 0;
+        for (const [, dm] of grid) { const c = dm.get(d); if (c) dayTotal += c.seconds; }
+        grandTotal += dayTotal;
+        const wd = wdSet.has(d);
+        let cls = 'text-slate-300 dark:text-slate-700';
+        if (wd) {
+          if (dayTotal >= target) cls = 'text-emerald-600 dark:text-emerald-400';
+          else if (dayTotal > 0) cls = 'text-amber-600 dark:text-amber-400';
+          else cls = 'text-slate-400 dark:text-slate-600';
+        }
+        const isToday = d === today;
+        html += `<td class="px-1 py-2.5 text-center text-xs font-bold bg-slate-50 dark:bg-gray-800/60 border-t-2 border-slate-200 dark:border-gray-700 ${cls} ${isToday ? 'bg-indigo-50 dark:bg-indigo-950/20' : ''}">${fmtDur(dayTotal) || '<span class="text-slate-300 dark:text-slate-700">\u2013</span>'}</td>`;
+      }
+      html += `<td class="px-2 py-2.5 text-center text-xs font-extrabold bg-slate-100 dark:bg-gray-800 border-t-2 border-slate-200 dark:border-gray-700 text-slate-700 dark:text-slate-300">${fmtDur(grandTotal)}</td></tr></tbody>`;
+
+      document.getElementById("grid").innerHTML = html;
+
+      // Footer
+      const draftCount = [...state.drafts.values()].reduce((sum, arr) => sum + arr.length, 0);
+      const deleteCount = state.pendingDeletes.size;
+      const hasPending = draftCount > 0 || deleteCount > 0;
+      const existingCount = state.worklogs.length;
+
+      // Compute scoped counts
+      const week = getWeekRange(state.from);
+      const month = getMonthRange(state.from);
+      const weekDraftCount = [...state.drafts.values()].filter(arr => arr.length > 0 && isDateInRange(arr[0].date, week.from, week.to)).reduce((sum, arr) => sum + arr.length, 0);
+      const monthDraftCount = [...state.drafts.values()].filter(arr => arr.length > 0 && isDateInRange(arr[0].date, month.from, month.to)).reduce((sum, arr) => sum + arr.length, 0);
+      const weekWlCount = state.worklogs.filter(w => isDateInRange(w.startDate, week.from, week.to)).length;
+      const monthWlCount = state.worklogs.filter(w => isDateInRange(w.startDate, month.from, month.to)).length;
+
+      const btnCls = 'inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-slate-50 dark:hover:bg-gray-800 transition shadow-sm';
+      const submitBtnCls = 'inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-sm transition active:scale-[.97]';
+      const undoBtnCls = 'inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-sky-200 dark:border-sky-800 text-sky-700 dark:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-950/30 transition shadow-sm';
+      const checkIcon = '<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/></svg>';
+      const undoIcon = '<svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3"/></svg>';
+
+      document.getElementById("footer").innerHTML = `
+        <button onclick="showIssueSearch()" class="${btnCls}">
+          <svg class="w-3.5 h-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+          Add Issue
+        </button>
+        <button onclick="copyPrevWeek()" class="${btnCls}">
+          <svg class="w-3.5 h-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5a1.125 1.125 0 01-1.125-1.125v-1.5a3.375 3.375 0 00-3.375-3.375H9.75"/></svg>
+          Copy Prev Week
+        </button>
+        <button onclick="exportCSV()" class="${btnCls}">
+          <svg class="w-3.5 h-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
+          CSV
+        </button>
+        <div class="flex-1"></div>
+        ${existingCount > 0 ? `
+          <div class="flex items-center gap-1">
+            ${weekWlCount > 0 ? `<button onclick="undoWeek()" class="${undoBtnCls}">${undoIcon} Undo Week (${weekWlCount})</button>` : ''}
+            ${monthWlCount > 0 ? `<button onclick="undoMonth()" class="${undoBtnCls}">${undoIcon} Undo Month (${monthWlCount})</button>` : ''}
+          </div>
+        ` : ''}
+        ${hasPending ? `
+          <span class="text-xs text-slate-500 dark:text-slate-400 tabular-nums">${draftCount} draft(s)${deleteCount ? `, ${deleteCount} del` : ''}</span>
+          <button onclick="discardAll()" class="px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-red-50 dark:hover:bg-red-950/30 text-slate-600 dark:text-slate-400 hover:text-red-600 transition shadow-sm">Discard</button>
+          <div class="flex items-center gap-1">
+            ${weekDraftCount > 0 ? `<button onclick="submitWeek()" class="${submitBtnCls}">${checkIcon} Week (${weekDraftCount})</button>` : ''}
+            ${monthDraftCount > 0 && monthDraftCount !== weekDraftCount ? `<button onclick="submitMonth()" class="${submitBtnCls}">${checkIcon} Month (${monthDraftCount})</button>` : ''}
+            <button onclick="submitAll()" class="${submitBtnCls}">${checkIcon} All (${draftCount})</button>
+          </div>
+        ` : ''}
+        ${state.evidence ? `<span class="text-[10px] text-slate-400 dark:text-slate-600" data-tip="Evidence: ${state.evidence.commits} commits, ${state.evidence.transitions} transitions, ${state.evidence.patterns} patterns">${state.evidence.commits} commits \u00b7 ${state.evidence.transitions} transitions \u00b7 ${state.evidence.patterns} patterns</span>` : ''}
+      `;
+    }
+
+    function renderCell(key, date, cell, compact, colW, todayBg, focusRing='', fcAttr='') {
+      const isSug = cell.source === 'suggestion';
+      const isDraft = cell.source === 'draft';
+      const bg = isDraft ? 'bg-emerald-50 dark:bg-emerald-950/20 border-l-2 border-l-emerald-400'
+                 : isSug ? 'bg-sky-50 dark:bg-sky-950/20 border-l-2 border-l-sky-400' : `${todayBg}`;
+      const dur = fmtDur(cell.seconds);
+      const desc = cell.entries[0]?.description ?? '';
+      const tip = cell.reasoning ? ` data-tip="${esc(cell.reasoning)}"` : (desc ? ` data-tip="${esc(desc)}"` : '');
+      const conf = isSug && cell.confidence ? `<span class="inline-block w-1.5 h-1.5 rounded-full ${cell.confidence==='high'?'bg-emerald-500':cell.confidence==='medium'?'bg-amber-400':'bg-slate-400'} mr-0.5 -translate-y-px"></span>` : '';
+
+      let actions = '';
+      if (isSug) {
+        actions = `<div class="flex gap-1 justify-center mt-1">
+          <button onclick="event.stopPropagation();acceptSuggestion('${key}','${date}')" class="w-5 h-5 flex items-center justify-center rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-200 dark:hover:bg-emerald-800/60 transition text-[10px] font-bold" title="Accept as draft">\u2713</button>
+          <button onclick="event.stopPropagation();rejectSuggestion('${key}','${date}')" class="w-5 h-5 flex items-center justify-center rounded bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-800/60 transition text-[10px] font-bold" title="Reject">\u2715</button>
+        </div>`;
+      } else if (isDraft) {
+        actions = `<div class="cell-actions absolute top-0.5 right-0.5 flex gap-0.5">
+          <button onclick="event.stopPropagation();pushSingleDraft('${key}','${date}')" class="w-5 h-5 flex items-center justify-center rounded text-emerald-500 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 transition" title="Push to Tempo">
+            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/></svg>
+          </button>
+          <button onclick="event.stopPropagation();removeDraft('${key}','${date}')" class="w-5 h-5 flex items-center justify-center rounded text-slate-300 dark:text-slate-600 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 transition text-[10px]" title="Remove draft">\u2715</button>
+        </div>`;
+      } else {
+        actions = `<div class="cell-actions absolute top-0.5 right-0.5 flex gap-0.5">
+          <button onclick="event.stopPropagation();undoWorklog('${key}','${date}')" class="w-5 h-5 flex items-center justify-center rounded text-sky-500 dark:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-950/40 transition" title="Undo to draft">
+            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3"/></svg>
+          </button>
+          <button onclick="event.stopPropagation();deleteWorklogNow('${key}','${date}')" class="w-5 h-5 flex items-center justify-center rounded text-slate-300 dark:text-slate-600 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 transition" title="Delete permanently">
+            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/></svg>
+          </button>
+        </div>`;
+      }
+
+      const isLoading = cellLoading.has(`${key}:${date}`);
+      return `<td class="px-1 py-1.5 text-center border-b border-slate-100 dark:border-gray-800/60 ${colW} ${bg} ${focusRing} cursor-pointer hover:bg-indigo-50/60 dark:hover:bg-indigo-950/20 transition-colors relative"
+        ${fcAttr} onclick="startEdit('${key}','${date}')"${tip}>
+        ${isLoading ? '<div class="flex items-center justify-center py-2"><div class="cell-spinner"></div></div>' : `
+        ${actions}
+        <div class="flex flex-col items-center">
+          <span class="font-semibold text-[13px] text-slate-800 dark:text-slate-200">${conf}${dur}</span>
+          ${compact ? '' : `<span class="text-[10px] text-slate-400 dark:text-slate-500 max-w-[85px] truncate leading-tight">${esc(desc)}</span>`}
+        </div>`}
+      </td>`;
+    }
+
+    function renderEditCell(key, date, cell, colW) {
+      const dur = cell ? fmtDur(cell.seconds) : '';
+      const desc = cell?.entries?.[0]?.description ?? '';
+      return `<td class="px-1 py-1 ${colW} bg-white dark:bg-gray-900 border-b border-slate-100 dark:border-gray-800/60 ring-2 ring-indigo-500 ring-inset rounded-sm">
+        <div class="flex flex-col gap-1">
+          <input id="edit-dur" class="text-xs font-medium border border-slate-200 dark:border-gray-700 rounded-md px-2 py-1 text-center bg-white dark:bg-gray-800 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="2h" value="${esc(dur)}" onkeydown="if(event.key==='Enter')saveEdit('${key}','${date}');if(event.key==='Escape')cancelEdit()">
+          <input id="edit-desc" class="text-xs border border-slate-200 dark:border-gray-700 rounded-md px-2 py-1 text-center bg-white dark:bg-gray-800 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="Description" value="${esc(desc)}" onkeydown="if(event.key==='Enter')saveEdit('${key}','${date}');if(event.key==='Escape')cancelEdit()">
+          <div class="flex gap-1 justify-center">
+            <button onclick="saveEdit('${key}','${date}')" class="text-[10px] px-2.5 py-0.5 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 font-semibold transition">Save</button>
+            <button onclick="cancelEdit()" class="text-[10px] px-2 py-0.5 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition">Esc</button>
+          </div>
+        </div>
+      </td>`;
+    }
+
+    // =========================================================================
+    // Cell interactions
+    // =========================================================================
+    function startEdit(key, date) { if (state.loading) return; state.editingCell = `${key}:${date}`; render(); const el = document.getElementById("edit-dur"); if (el) { el.focus(); el.select(); } }
+    function cancelEdit() { state.editingCell = null; render(); }
+    function saveEdit(key, date) {
+      const durVal = document.getElementById("edit-dur").value.trim();
+      const descVal = document.getElementById("edit-desc").value.trim();
+      if (!durVal) { cancelEdit(); return; }
+      let seconds; try { seconds = parseDur(durVal); } catch { toast("Invalid duration (use: 2h, 30m, 1h30m)", 'error'); return; }
+      if (!descVal) { toast("Description is required", 'error'); return; }
+      state.editingCell = null;
+      // Mark existing worklogs for deletion
+      for (const wl of state.worklogs.filter(w => w.issueKey === key && w.startDate === date)) {
+        state.pendingDeletes.add(wl.tempoWorklogId);
+      }
+      // Add as ONE draft
+      state.drafts.set(`${key}:${date}`, [{ issueKey: key, date, seconds, description: descVal }]);
+      render();
+    }
+    function deleteEntry(key, date) {
+      for (const wl of state.worklogs.filter(w => w.issueKey === key && w.startDate === date)) {
+        state.pendingDeletes.add(wl.tempoWorklogId);
+      }
+      state.drafts.delete(`${key}:${date}`);
+      render();
+    }
+    function removeDraft(key, date) {
+      const dk = `${key}:${date}`;
+      state.drafts.delete(dk);
+      // Un-mark any pending deletes for this cell
+      for (const wl of state.worklogs.filter(w => w.issueKey === key && w.startDate === date)) {
+        state.pendingDeletes.delete(wl.tempoWorklogId);
+      }
+      render();
+    }
+    function discardAll() {
+      const count = totalDraftCount();
+      if (count === 0 && state.pendingDeletes.size === 0) return;
+      if (!confirm(`Discard ${count} draft(s) and ${state.pendingDeletes.size} pending deletion(s)?`)) return;
+      state.drafts.clear();
+      state.pendingDeletes.clear();
+      toast('All drafts discarded', 'info');
+      render();
+    }
+
+    // =========================================================================
+    // Singular push (draft → Tempo)
+    // =========================================================================
+    async function pushSingleDraft(key, date) {
+      const dk = `${key}:${date}`;
+      const drafts = state.drafts.get(dk);
+      if (!drafts || drafts.length === 0) return;
+      cellLoading.add(dk);
+      render();
+      try {
+        let currentCursor = calcStartTime(date);
+        for (const draft of drafts) {
+          let st = draft.startTime;
+          if (!st) {
+             st = cursorToTime(currentCursor);
+             currentCursor += draft.seconds;
+          } else if (st.length === 5) {
+             st += ":00";
+          }
+          const result = await api('/api/worklog', {
+            method: 'POST',
+            body: JSON.stringify({
+              issueKey: key,
+              timeSpentSeconds: draft.seconds,
+              startDate: date,
+              startTime: st,
+              description: draft.description,
+            }),
+          });
+          state.worklogs.push(result);
+        }
+        // Remove draft
+        state.drafts.delete(dk);
+        const totalSec = drafts.reduce((sum, d) => sum + d.seconds, 0);
+        toast(`Pushed ${fmtDur(totalSec)} to ${key}`, 'success');
+      } catch (err) {
+        toast(`Push failed: ${err.message}`, 'error');
+      }
+      cellLoading.delete(dk);
+      render();
+    }
+
+    // =========================================================================
+    // Undo worklog (Tempo → draft)
+    // =========================================================================
+    async function undoWorklog(key, date) {
+      const wls = state.worklogs.filter(w => w.issueKey === key && w.startDate === date);
+      if (wls.length === 0) return;
+      const dk = `${key}:${date}`;
+      cellLoading.add(dk);
+      render();
+      try {
+        const totalSeconds = wls.reduce((sum, w) => sum + w.timeSpentSeconds, 0);
+        // Delete all worklogs for this cell from Tempo
+        for (const wl of wls) {
+          await api(`/api/worklog/${wl.tempoWorklogId}`, { method: 'DELETE' });
+        }
+        // Remove from state.worklogs
+        state.worklogs = state.worklogs.filter(w => !(w.issueKey === key && w.startDate === date));
+        // Add as draft
+        const newDrafts = wls.map(w => ({ issueKey: key, date: w.startDate, seconds: w.timeSpentSeconds, description: w.description ?? '', startTime: w.startTime }));
+        state.drafts.set(dk, newDrafts);
+        toast(`Undid ${fmtDur(totalSeconds)} on ${key} — now a draft`, 'info');
+      } catch (err) {
+        toast(`Undo failed: ${err.message}`, 'error');
+      }
+      cellLoading.delete(dk);
+      render();
+    }
+
+    // =========================================================================
+    // Delete worklog permanently (Tempo → gone)
+    // =========================================================================
+    async function deleteWorklogNow(key, date) {
+      const wls = state.worklogs.filter(w => w.issueKey === key && w.startDate === date);
+      if (wls.length === 0) return;
+      const totalSeconds = wls.reduce((sum, w) => sum + w.timeSpentSeconds, 0);
+      if (!confirm(`Permanently delete ${fmtDur(totalSeconds)} on ${key} for ${date}? This cannot be undone.`)) return;
+      const dk = `${key}:${date}`;
+      cellLoading.add(dk);
+      render();
+      try {
+        for (const wl of wls) {
+          await api(`/api/worklog/${wl.tempoWorklogId}`, { method: 'DELETE' });
+        }
+        state.worklogs = state.worklogs.filter(w => !(w.issueKey === key && w.startDate === date));
+        state.pendingDeletes = new Set([...state.pendingDeletes].filter(id => !wls.some(w => w.tempoWorklogId === id)));
+        toast(`Deleted ${fmtDur(totalSeconds)} from ${key}`, 'success');
+      } catch (err) {
+        toast(`Delete failed: ${err.message}`, 'error');
+      }
+      cellLoading.delete(dk);
+      render();
+    }
+
+    // =========================================================================
+    // Bulk undo (week / month)
+    // =========================================================================
+    async function undoBulk(worklogs, label) {
+      if (worklogs.length === 0) { toast(`No worklogs to undo for this ${label}`, 'info'); return; }
+      const totalSeconds = worklogs.reduce((sum, w) => sum + w.timeSpentSeconds, 0);
+      if (!confirm(`Undo ${worklogs.length} worklog(s) (${fmtDur(totalSeconds)}) for this ${label}? They will become editable drafts.`)) return;
+      showLoading(`Undoing 0/${worklogs.length}...`);
+      let done = 0;
+      const failed = [];
+      for (const wl of worklogs) {
+        try {
+          await api(`/api/worklog/${wl.tempoWorklogId}`, { method: 'DELETE' });
+          // Remove from worklogs
+          state.worklogs = state.worklogs.filter(w => w.tempoWorklogId !== wl.tempoWorklogId);
+          // Add as draft
+          const dk = `${wl.issueKey}:${wl.startDate}`;
+          const existing = state.drafts.get(dk);
+          if (existing) {
+            existing.push({ issueKey: wl.issueKey, date: wl.startDate, seconds: wl.timeSpentSeconds, description: wl.description ?? '', startTime: wl.startTime });
+          } else {
+            state.drafts.set(dk, [{ issueKey: wl.issueKey, date: wl.startDate, seconds: wl.timeSpentSeconds, description: wl.description ?? '', startTime: wl.startTime }]);
+          }
+          done++;
+          document.getElementById('loading-text').textContent = `Undoing ${done}/${worklogs.length}...`;
+        } catch (err) {
+          failed.push({ key: wl.issueKey, error: err.message });
+        }
+      }
+      hideLoading();
+      if (failed.length > 0) {
+        toast(`Undid ${done}/${worklogs.length} worklogs (${failed.length} failed)`, 'warning');
+      } else {
+        toast(`Undid ${done} worklog(s) for this ${label} — now editable drafts`, 'success');
+      }
+      render();
+    }
+    function undoWeek() {
+      const week = getWeekRange(state.from);
+      const wls = state.worklogs.filter(w => isDateInRange(w.startDate, week.from, week.to));
+      undoBulk(wls, 'week');
+    }
+    function undoMonth() {
+      const month = getMonthRange(state.from);
+      const wls = state.worklogs.filter(w => isDateInRange(w.startDate, month.from, month.to));
+      undoBulk(wls, 'month');
+    }
+
+    async function submitDrafts(filterFn, label = 'all') {
+      // Collect applicable drafts
+      const applicableDrafts = [];
+      for (const [dk, drafts] of state.drafts) {
+        if (!drafts || drafts.length === 0) continue;
+        if (!filterFn || filterFn(drafts[0])) applicableDrafts.push([dk, drafts]);
+      }
+      // Collect applicable pending deletes (only for days that have applicable drafts, or all if no filter)
+      const applicableDates = new Set(applicableDrafts.map(([, drafts]) => drafts[0].date));
+      const applicableDeletes = filterFn
+        ? [...state.pendingDeletes].filter(id => {
+            const wl = state.worklogs.find(w => w.tempoWorklogId === id);
+            return wl && applicableDates.has(wl.startDate);
+          })
+        : [...state.pendingDeletes];
+
+      if (applicableDrafts.length === 0 && applicableDeletes.length === 0) {
+        toast(`No drafts to submit for ${label}`, 'info');
+        return;
+      }
+      const totalDrafts = applicableDrafts.reduce((sum, [, drafts]) => sum + drafts.length, 0);
+      if (!confirm(`Submit ${totalDrafts} draft(s) and ${applicableDeletes.length} deletion(s) for ${label}?`)) return;
+      showLoading(`Submitting ${totalDrafts} entries...`);
+      try {
+        // Calculate start times for each day
+        const draftsByDate = new Map();
+        for (const [, drafts] of applicableDrafts) {
+          const date = drafts[0].date;
+          const arr = draftsByDate.get(date) ?? [];
+          arr.push(...drafts);
+          draftsByDate.set(date, arr);
+        }
+        const createEntries = [];
+        for (const [date, entries] of draftsByDate) {
+          const kept = state.worklogs.filter(w => w.startDate === date && !state.pendingDeletes.has(w.tempoWorklogId));
+          let cursor = 9 * 3600;
+          for (const wl of kept) { const [h,m,s] = wl.startTime.split(':').map(Number); const end = h*3600+m*60+s+wl.timeSpentSeconds; if (end > cursor) cursor = end; }
+          for (const entry of entries) {
+            let st = entry.startTime;
+            if (!st) {
+              st = cursorToTime(cursor);
+              cursor += entry.seconds;
+            } else if (st.length === 5) {
+              st += ":00";
+            }
+            createEntries.push({ issueKey: entry.issueKey, timeSpentSeconds: entry.seconds, startDate: entry.date, startTime: st, description: entry.description });
+          }
+        }
+        const result = await api('/api/worklogs/batch', { method: 'POST', body: JSON.stringify({ create: createEntries, delete: applicableDeletes }) });
+        // Remove submitted drafts from state
+        for (const [dk] of applicableDrafts) state.drafts.delete(dk);
+        // Remove applicable deletes from pendingDeletes
+        for (const id of applicableDeletes) state.pendingDeletes.delete(id);
+        const hasFailures = result.deleteFailed?.length > 0 || result.createFailed?.length > 0;
+        if (hasFailures) {
+          toast(`Submitted with issues: ${result.created} created, ${result.createFailed?.length ?? 0} failed`, 'warning');
+        } else {
+          toast(`Submitted ${result.created} worklog(s) for ${label}`, 'success');
+        }
+        await fetchData();
+      } catch (err) {
+        hideLoading();
+        toast(`Submit failed: ${err.message}`, 'error');
+        render();
+      }
+    }
+    function submitAll() { submitDrafts(null, 'all'); }
+    function submitWeek() {
+      const week = getWeekRange(state.from);
+      submitDrafts(d => isDateInRange(d.date, week.from, week.to), 'this week');
+    }
+    function submitMonth() {
+      const month = getMonthRange(state.from);
+      submitDrafts(d => isDateInRange(d.date, month.from, month.to), 'this month');
+    }
+
+    // =========================================================================
+    // AI Suggestions (SSE)
+    // =========================================================================
+    async function runSuggest() {
+      const btn = document.getElementById("suggest-btn");
+      const area = document.getElementById("progress-area");
+      const txt = document.getElementById("progress-text");
+      btn.disabled = true; area.classList.remove("hidden"); txt.textContent = "Starting...";
+      try {
+        const instructions = document.getElementById("ai-instructions").value.trim();
+        const res = await fetch("/api/suggest-stream", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ from: state.from, to: state.to, targetHoursPerDay: state.targetSecondsPerDay / 3600, instructions: instructions || undefined }) });
+        const reader = res.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read(); if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n"); buffer = lines.pop() || "";
+          let eventType = "";
+          for (const line of lines) {
+            if (line.startsWith("event: ")) { eventType = line.slice(7); continue; }
+            if (line.startsWith("data: ")) {
+              const data = JSON.parse(line.slice(6));
+              if (eventType === "progress") txt.textContent = data.message;
+              else if (eventType === "evidence") state.evidence = data;
+              else if (eventType === "result") {
+                // Merge new suggestions: replace days that overlap, keep the rest
+                const newDates = new Set(data.days.map(d => d.date));
+                state.allSuggestions = state.allSuggestions.filter(d => !newDates.has(d.date)).concat(data.days);
+                // Clear rejections only for the new dates
+                for (const date of newDates) {
+                  for (const key of [...state.rejectedSuggestions]) {
+                    if (key.startsWith(date + ":")) state.rejectedSuggestions.delete(key);
+                  }
+                }
+              }
+              else if (eventType === "error") toast("Suggestion failed: " + data.error, 'error');
+              eventType = "";
+            }
+          }
+        }
+      } catch (err) { toast("Suggestion failed: " + err.message, 'error'); }
+      btn.disabled = false; area.classList.add("hidden"); render();
+    }
+    function acceptSuggestion(key, date) {
+      const { grid } = buildGridData(); const cell = grid.get(key)?.get(date);
+      if (!cell || cell.source !== 'suggestion') return;
+      const drafts = cell.entries.map(e => ({
+        issueKey: key, date, seconds: parseDur(e.durationHuman), description: e.description, startTime: e.startTime
+      }));
+      state.drafts.set(`${key}:${date}`, drafts);
+      render();
+    }
+    function rejectSuggestion(key, date) { state.rejectedSuggestions.add(`${date}:${key}`); render(); }
+    function acceptAllSuggestions() {
+      if (state.allSuggestions.length === 0) return;
+      const { grid } = buildGridData();
+      for (const [key, dm] of grid) {
+        for (const [date, cell] of dm) {
+          if (cell.source === 'suggestion') {
+            const drafts = cell.entries.map(e => ({
+              issueKey: key, date, seconds: parseDur(e.durationHuman), description: e.description, startTime: e.startTime
+            }));
+            state.drafts.set(`${key}:${date}`, drafts);
+          }
+        }
+      }
+      render();
+    }
+
+    // =========================================================================
+    // Navigation
+    // =========================================================================
+    function navigate(delta) {
+      const f = new Date(`${state.from}T12:00:00`), t = new Date(`${state.to}T12:00:00`);
+      if (typeof delta === 'string' && delta.endsWith('m')) {
+        const months = parseInt(delta); f.setMonth(f.getMonth() + months); f.setDate(1); t.setMonth(f.getMonth() + 1); t.setDate(0);
+      } else { f.setDate(f.getDate() + delta); t.setDate(t.getDate() + delta); }
+      state.from = f.toISOString().slice(0, 10); state.to = t.toISOString().slice(0, 10);
+      fetchData();
+    }
+    function goThisWeek() {
+      const now = new Date(), dow = now.getDay();
+      if (state.viewMode === 'month') { state.from = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0,10); state.to = new Date(now.getFullYear(), now.getMonth()+1, 0).toISOString().slice(0,10); }
+      else { const mon = new Date(now); mon.setDate(now.getDate() - (dow===0?6:dow-1)); const fri = new Date(mon); fri.setDate(mon.getDate()+4); state.from = mon.toISOString().slice(0,10); state.to = fri.toISOString().slice(0,10); }
+      fetchData();
+    }
+    function setView(mode) {
+      state.viewMode = mode;
+      if (mode === 'month') { const d = new Date(`${state.from}T12:00:00`); state.from = new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0,10); state.to = new Date(d.getFullYear(), d.getMonth()+1, 0).toISOString().slice(0,10); }
+      else { const d = new Date(`${state.from}T12:00:00`), dow = d.getDay(); const mon = new Date(d); mon.setDate(d.getDate()-(dow===0?6:dow-1)); const fri = new Date(mon); fri.setDate(mon.getDate()+4); state.from = mon.toISOString().slice(0,10); state.to = fri.toISOString().slice(0,10); }
+      fetchData();
+    }
+
+    // =========================================================================
+    // Issue search
+    // =========================================================================
+    let searchTimeout;
+    function showIssueSearch() {
+      document.getElementById("search-area").innerHTML = `
+        <div class="flex items-center gap-2 fade-in">
+          <div class="relative">
+            <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/></svg>
+            <input id="issue-search" class="text-sm border border-slate-200 dark:border-gray-700 rounded-lg pl-9 pr-3 py-2 w-80 bg-white dark:bg-gray-900 focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm" placeholder="Search by key or keyword..." oninput="debounceSearch()" onkeydown="if(event.key==='Escape')hideIssueSearch()">
+            <div id="search-results" class="absolute top-full left-0 w-full bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-lg mt-1.5 max-h-52 overflow-y-auto shadow-xl z-50 hidden"></div>
+          </div>
+          <button onclick="hideIssueSearch()" class="text-sm px-3 py-2 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition">Cancel</button>
+        </div>`;
+      document.getElementById("issue-search").focus();
+    }
+    function hideIssueSearch() { document.getElementById("search-area").innerHTML = ""; }
+    function debounceSearch() { clearTimeout(searchTimeout); searchTimeout = setTimeout(doSearch, 300); }
+    async function doSearch() {
+      const q = document.getElementById("issue-search")?.value?.trim();
+      if (!q || q.length < 2) { document.getElementById("search-results")?.classList.add("hidden"); return; }
+      try {
+        const data = await api(`/api/issues?q=${encodeURIComponent(q)}`);
+        const dd = document.getElementById("search-results");
+        dd.innerHTML = data.issues.length === 0 ? '<div class="px-4 py-3 text-sm text-slate-400 dark:text-slate-500">No results found</div>'
+          : data.issues.map(i => `<div class="px-4 py-2.5 text-sm cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-colors border-b border-slate-100 dark:border-gray-800 last:border-0" onclick="addIssueRow('${esc(i.key)}')"><span class="font-semibold text-indigo-600 dark:text-indigo-400 mr-2">${esc(i.key)}</span><span class="text-slate-600 dark:text-slate-400">${esc(i.summary)}</span></div>`).join("");
+        dd.classList.remove("hidden");
+      } catch {}
+    }
+    function addIssueRow(key) { if (!state.extraIssueKeys.includes(key)) state.extraIssueKeys.push(key); hideIssueSearch(); render(); }
+
+    // =========================================================================
+    // Copy previous week
+    // =========================================================================
+    async function copyPrevWeek() {
+      const wdSet = new Set(state.workingDays);
+      // Determine previous week range
+      const prevFrom = new Date(`${state.from}T12:00:00`);
+      prevFrom.setDate(prevFrom.getDate() - 7);
+      const prevTo = new Date(`${state.to}T12:00:00`);
+      prevTo.setDate(prevTo.getDate() - 7);
+      const pfStr = prevFrom.toISOString().slice(0, 10);
+      const ptStr = prevTo.toISOString().slice(0, 10);
+
+      showLoading("Loading previous week...");
+      try {
+        const data = await api(`/api/worklogs?from=${pfStr}&to=${ptStr}`);
+        hideLoading();
+        let count = 0;
+        for (const wl of data.worklogs) {
+          const origDate = new Date(`${wl.startDate}T12:00:00`);
+          origDate.setDate(origDate.getDate() + 7);
+          const newDate = origDate.toISOString().slice(0, 10);
+          if (!wdSet.has(newDate)) continue; // skip non-working days
+          const dk = `${wl.issueKey}:${newDate}`;
+          // don't overwrite existing drafts entirely, just append if already exists or skip if we only want to append
+          const existing = state.drafts.get(dk);
+          // Don't copy if there's already an existing worklog
+          if (state.worklogs.some(w => w.issueKey === wl.issueKey && w.startDate === newDate)) continue;
+          if (existing) {
+             existing.push({ issueKey: wl.issueKey, date: newDate, seconds: wl.timeSpentSeconds, description: wl.description, startTime: wl.startTime });
+          } else {
+             state.drafts.set(dk, [{ issueKey: wl.issueKey, date: newDate, seconds: wl.timeSpentSeconds, description: wl.description, startTime: wl.startTime }]);
+          }
+          if (wl.issueSummary) state.issueSummaries.set(wl.issueKey, wl.issueSummary);
+          count++;
+        }
+        if (count === 0) toast("No entries to copy from previous week", 'info');
+        else toast(`Copied ${count} entries as drafts`, 'success');
+        render();
+      } catch (err) { hideLoading(); toast("Copy failed: " + err.message, 'error'); }
+    }
+
+    // =========================================================================
+    // CSV Export
+    // =========================================================================
+    function exportCSV() {
+      const { grid, dates } = buildGridData();
+      const rows = [["Date", "Issue Key", "Duration", "Description", "Source"]];
+      for (const d of dates) {
+        for (const [key, dm] of grid) {
+          const cell = dm.get(d);
+          if (!cell) continue;
+          const dur = fmtDur(cell.seconds);
+          const desc = cell.entries[0]?.description ?? '';
+          rows.push([d, key, dur, `"${desc.replace(/"/g, '""')}"`, cell.source]);
+        }
+      }
+      const csv = rows.map(r => r.join(",")).join("\n");
+      const blob = new Blob([csv], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `tempo-${state.from}-to-${state.to}.csv`;
+      a.click(); URL.revokeObjectURL(url);
+    }
+
+    // =========================================================================
+    // Keyboard navigation
+    // =========================================================================
+    document.addEventListener('keydown', (e) => {
+      if (state.editingCell) return; // let edit inputs handle keys
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+
+      const { grid, dates } = buildGridData();
+      const issueKeys = [...grid.keys()].sort();
+      if (issueKeys.length === 0 || dates.length === 0) return;
+
+      const fc = state.focusedCell ?? { row: 0, col: 0 };
+      let { row, col } = fc;
+      let handled = true;
+
+      switch (e.key) {
+        case 'ArrowUp': row = Math.max(0, row - 1); break;
+        case 'ArrowDown': row = Math.min(issueKeys.length - 1, row + 1); break;
+        case 'ArrowLeft': col = Math.max(0, col - 1); break;
+        case 'ArrowRight': col = Math.min(dates.length - 1, col + 1); break;
+        case 'Enter': {
+          const key = issueKeys[row], date = dates[col];
+          if (key && date) startEdit(key, date);
+          break;
+        }
+        case 'a': {
+          const key = issueKeys[row], date = dates[col];
+          const cell = grid.get(key)?.get(date);
+          if (cell?.source === 'suggestion') acceptSuggestion(key, date);
+          break;
+        }
+        case 'x': {
+          const key = issueKeys[row], date = dates[col];
+          const cell = grid.get(key)?.get(date);
+          if (cell?.source === 'suggestion') rejectSuggestion(key, date);
+          break;
+        }
+        case 'd': {
+          const key = issueKeys[row], date = dates[col];
+          const cell = grid.get(key)?.get(date);
+          if (cell?.source === 'existing') deleteEntry(key, date);
+          else if (cell?.source === 'draft') removeDraft(key, date);
+          break;
+        }
+        case 'p': {
+          const key = issueKeys[row], date = dates[col];
+          const cell = grid.get(key)?.get(date);
+          if (cell?.source === 'draft') pushSingleDraft(key, date);
+          break;
+        }
+        case 'u': {
+          const key = issueKeys[row], date = dates[col];
+          const cell = grid.get(key)?.get(date);
+          if (cell?.source === 'existing') undoWorklog(key, date);
+          break;
+        }
+        default: handled = false;
+      }
+
+      if (handled) {
+        e.preventDefault();
+        state.focusedCell = { row, col };
+        render();
+        // Scroll focused cell into view
+        const focusedTd = document.querySelector(`[data-fc="${row}-${col}"]`);
+        if (focusedTd) focusedTd.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      }
+    });
+
+    // =========================================================================
+    // Scan directories
+    // =========================================================================
+    function renderScanDirs() {
+      const el = document.getElementById("scan-dirs-list");
+      if (!el) return;
+      if (state.scanDirs.length === 0) {
+        el.innerHTML = '<p class="text-[11px] text-slate-400 dark:text-slate-600">No directories configured. Add project paths to scan for git repos.</p>';
+        return;
+      }
+      el.innerHTML = state.scanDirs.map((dir, i) =>
+        `<div class="flex items-center gap-2.5 py-1.5 group ${dir.enabled ? '' : 'opacity-50'}">
+          <label class="flex items-center gap-0 cursor-pointer">
+            <input type="checkbox" ${dir.enabled ? 'checked' : ''} onchange="toggleScanDir(${i})"
+              class="w-3.5 h-3.5 rounded border-slate-300 dark:border-gray-600 text-indigo-600 focus:ring-indigo-500 cursor-pointer">
+          </label>
+          <span class="flex-1 text-xs font-mono ${dir.enabled ? 'text-slate-700 dark:text-slate-300' : 'text-slate-400 dark:text-slate-600 line-through'}">${esc(dir.path)}</span>
+          <button onclick="removeScanDir(${i})" class="opacity-0 group-hover:opacity-100 text-[10px] text-slate-400 hover:text-red-500 transition" title="Remove">\u2715</button>
+        </div>`
+      ).join("");
+    }
+
+    async function saveScanDirs() {
+      try { await api("/api/config/scanDirs", { method: "POST", body: JSON.stringify({ scanDirs: state.scanDirs }) }); }
+      catch (err) { toast("Failed to save: " + err.message, 'error'); }
+    }
+
+    async function toggleScanDir(index) {
+      state.scanDirs[index].enabled = !state.scanDirs[index].enabled;
+      renderScanDirs();
+      await saveScanDirs();
+    }
+
+    async function addScanDir() {
+      const input = document.getElementById("new-scan-dir");
+      const dir = input.value.trim();
+      if (!dir) return;
+      if (state.scanDirs.some(d => d.path === dir)) { input.value = ""; return; } // prevent duplicates
+      state.scanDirs.push({ path: dir, enabled: true });
+      input.value = "";
+      renderScanDirs();
+      await saveScanDirs();
+    }
+
+    async function removeScanDir(index) {
+      state.scanDirs.splice(index, 1);
+      renderScanDirs();
+      await saveScanDirs();
+    }
+
+    // =========================================================================
+    // Google Workspace
+    // =========================================================================
+    async function loadGoogleStatus() {
+      const el = document.getElementById("google-status");
+      if (!el) return;
+      try {
+        const data = await api("/api/google/status");
+        if (data.connected) {
+          el.innerHTML = '<span class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400">Connected</span>';
+        } else if (data.configured) {
+          el.innerHTML = '<button onclick="connectGoogle()" class="text-xs px-2.5 py-1 bg-sky-500 text-white rounded-md hover:bg-sky-600 transition">Connect</button>';
+        } else {
+          el.innerHTML = '<span class="text-[10px] text-slate-400 dark:text-slate-600">Set googleClientId via CLI first</span>';
+        }
+      } catch {
+        el.innerHTML = '<span class="text-[10px] text-slate-400">unavailable</span>';
+      }
+    }
+
+    async function connectGoogle() {
+      try {
+        const data = await api("/api/google/connect");
+        window.open(data.authUrl, "_blank");
+        // Poll for connection status
+        const poll = setInterval(async () => {
+          try {
+            const status = await api("/api/google/status");
+            if (status.connected) { clearInterval(poll); await loadGoogleStatus(); }
+          } catch {}
+        }, 2000);
+        // Stop polling after 2 minutes
+        setTimeout(() => clearInterval(poll), 120000);
+      } catch (err) { toast("Google connect failed: " + err.message, 'error'); }
+    }
+
+    // =========================================================================
+    // =========================================================================
+    // Issue detail panel
+    // =========================================================================
+    async function openIssue(key) {
+      const panel = document.getElementById("issue-panel");
+      const backdrop = document.getElementById("issue-backdrop");
+      const content = document.getElementById("issue-panel-content");
+
+      backdrop.classList.remove("hidden");
+      panel.classList.remove("translate-x-full");
+      content.innerHTML = `<div class="flex items-center justify-center h-full"><div class="w-6 h-6 border-2 border-slate-200 dark:border-gray-700 border-t-indigo-500 rounded-full spinner"></div></div>`;
+
+      try {
+        const [issueData, transData] = await Promise.all([
+          api(`/api/issue/${key}`),
+          api(`/api/issue/${key}/transitions`),
+        ]);
+        renderIssuePanel(issueData, transData.transitions);
+      } catch (err) {
+        content.innerHTML = `<div class="p-5 text-red-500 text-sm">Failed to load: ${esc(err.message)}</div>`;
+      }
+    }
+
+    function closeIssue() {
+      document.getElementById("issue-panel").classList.add("translate-x-full");
+      document.getElementById("issue-backdrop").classList.add("hidden");
+    }
+
+    function renderIssuePanel(issue, transitions) {
+      const content = document.getElementById("issue-panel-content");
+      const statusColors = {
+        'done': 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400',
+        'indeterminate': 'bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-400',
+        'new': 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400',
+      };
+      const defaultStatusCls = 'bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-400';
+
+      // Simple ADF → text
+      function adfToText(node) {
+        if (!node) return '';
+        if (node.text) return node.text;
+        if (node.content) return node.content.map(adfToText).join('');
+        return '';
+      }
+      function adfToLines(doc) {
+        if (!doc || !doc.content) return '';
+        return doc.content.map(block => {
+          const text = adfToText(block);
+          if (block.type === 'heading') return '<p class="font-semibold mt-2">' + esc(text) + '</p>';
+          if (block.type === 'bulletList' || block.type === 'orderedList') {
+            return (block.content || []).map(li => '<p class="ml-3">\u2022 ' + esc(adfToText(li)) + '</p>').join('');
+          }
+          if (block.type === 'codeBlock') return '<pre class="bg-slate-100 dark:bg-gray-800 rounded p-2 text-xs my-1 overflow-x-auto">' + esc(text) + '</pre>';
+          return text ? '<p>' + esc(text) + '</p>' : '';
+        }).join('');
+      }
+
+      const descHtml = issue.description ? adfToLines(issue.description) : '<span class="text-slate-400 dark:text-slate-600 italic">No description</span>';
+
+      const fields = [
+        issue.assignee && ['Assignee', issue.assignee],
+        issue.priority && ['Priority', issue.priority],
+        issue.sprint && ['Sprint', issue.sprint],
+        issue.estimate && ['Estimate', issue.estimate],
+        issue.reporter && ['Reporter', issue.reporter],
+        issue.created && ['Created', issue.created],
+        issue.updated && ['Updated', issue.updated],
+      ].filter(Boolean);
+
+      content.innerHTML = `
+        <!-- Header -->
+        <div class="px-5 py-4 border-b border-slate-100 dark:border-gray-800 bg-slate-50/50 dark:bg-gray-900/50">
+          <div class="flex items-center justify-between mb-1">
+            <span class="text-xs font-semibold text-indigo-600 dark:text-indigo-400 tracking-wide">${esc(issue.key)}</span>
+            <button onclick="closeIssue()" class="w-7 h-7 flex items-center justify-center rounded-md hover:bg-slate-200 dark:hover:bg-gray-700 transition text-slate-400">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <h2 class="text-base font-bold text-slate-800 dark:text-slate-200 leading-snug">${esc(issue.summary)}</h2>
+          <div class="flex items-center gap-2 mt-2">
+            <span class="text-[11px] font-semibold px-2 py-0.5 rounded-full ${defaultStatusCls}">${esc(issue.status)}</span>
+            <span class="text-[11px] text-slate-400 dark:text-slate-500">${esc(issue.type)}</span>
+          </div>
+        </div>
+
+        <!-- Transitions -->
+        ${transitions.length > 0 ? `
+        <div class="px-5 py-3 border-b border-slate-100 dark:border-gray-800">
+          <div class="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">Move to</div>
+          <div class="flex flex-wrap gap-1.5">
+            ${transitions.map(t => `
+              <button onclick="transitionIssue('${esc(issue.key)}','${esc(t.id)}','${esc(t.name)}')"
+                class="text-xs px-2.5 py-1 rounded-md border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 hover:border-indigo-300 dark:hover:border-indigo-700 transition font-medium text-slate-600 dark:text-slate-400">
+                ${esc(t.name)}
+              </button>
+            `).join('')}
+          </div>
+        </div>
+        ` : ''}
+
+        <!-- Fields -->
+        <div class="px-5 py-3 border-b border-slate-100 dark:border-gray-800">
+          ${fields.map(([label, value]) => `
+            <div class="flex items-center justify-between py-1">
+              <span class="text-[11px] text-slate-400 dark:text-slate-500">${label}</span>
+              <span class="text-xs font-medium text-slate-700 dark:text-slate-300">${esc(value)}</span>
+            </div>
+          `).join('')}
+        </div>
+
+        <!-- Description -->
+        <div class="px-5 py-3 border-b border-slate-100 dark:border-gray-800">
+          <div class="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">Description</div>
+          <div class="text-xs text-slate-600 dark:text-slate-400 leading-relaxed space-y-1">${descHtml}</div>
+        </div>
+
+        <!-- Comments -->
+        ${issue.comments.length > 0 ? `
+        <div class="px-5 py-3 border-b border-slate-100 dark:border-gray-800">
+          <div class="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">Recent Comments</div>
+          ${issue.comments.map(c => `
+            <div class="mb-2 last:mb-0">
+              <div class="flex items-center gap-1.5 mb-0.5">
+                <span class="text-[11px] font-semibold text-slate-700 dark:text-slate-300">${esc(c.author)}</span>
+                <span class="text-[10px] text-slate-400 dark:text-slate-500">${esc(c.created)}</span>
+              </div>
+              <div class="text-xs text-slate-600 dark:text-slate-400">${c.body ? adfToLines(c.body) : ''}</div>
+            </div>
+          `).join('')}
+        </div>
+        ` : ''}
+
+        <!-- Quick comment -->
+        <div class="px-5 py-3">
+          <div class="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">Add Comment</div>
+          <textarea id="issue-comment-input" rows="2" placeholder="Write a comment..."
+            class="w-full text-xs border border-slate-200 dark:border-gray-700 rounded-md p-2 bg-white dark:bg-gray-800 text-slate-800 dark:text-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none resize-y"></textarea>
+          <button onclick="postComment('${esc(issue.key)}')" class="mt-1.5 text-xs px-3 py-1.5 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition font-semibold">Post</button>
+        </div>
+      `;
+    }
+
+    async function transitionIssue(key, transitionId, name) {
+      if (!confirm('Move ' + key + ' to "' + name + '"?')) return;
+      try {
+        await api('/api/issue/' + key + '/transition', { method: 'POST', body: JSON.stringify({ transitionId }) });
+        await openIssue(key); // re-fetch to update status + transitions
+      } catch (err) { toast('Transition failed: ' + err.message, 'error'); }
+    }
+
+    async function postComment(key) {
+      const input = document.getElementById('issue-comment-input');
+      const text = input.value.trim();
+      if (!text) return;
+      try {
+        await api('/api/issue/' + key + '/comment', { method: 'POST', body: JSON.stringify({ text }) });
+        input.value = '';
+        await openIssue(key); // re-fetch to show new comment
+      } catch (err) { toast('Comment failed: ' + err.message, 'error'); }
+    }
+
+    // Preferences panel
+    // =========================================================================
+    async function togglePrefs() {
+      const panel = document.getElementById("prefs-panel");
+      if (panel.classList.contains("hidden")) {
+        panel.classList.remove("hidden");
+        await loadPrefs();
+      } else {
+        panel.classList.add("hidden");
+      }
+    }
+
+    async function loadPrefs() {
+      renderScanDirs();
+      await loadGoogleStatus();
+      try {
+        const data = await api("/api/preferences");
+        const prefs = data.preferences;
+        const countEl = document.getElementById("prefs-count");
+        countEl.textContent = String(prefs.length);
+
+        const list = document.getElementById("prefs-list");
+        if (prefs.length === 0) {
+          list.innerHTML = '<div class="px-5 py-6 text-center text-sm text-slate-400 dark:text-slate-600">No learned descriptions yet. They appear as you create worklogs.</div>';
+          return;
+        }
+
+        // Group by issue key
+        const grouped = new Map();
+        for (const p of prefs) {
+          const arr = grouped.get(p.issueKey) ?? [];
+          arr.push(p);
+          grouped.set(p.issueKey, arr);
+        }
+
+        let html = '';
+        for (const [key, items] of [...grouped].sort(([a], [b]) => a.localeCompare(b))) {
+          html += `<div class="border-b border-slate-100 dark:border-gray-800 last:border-0">
+            <div class="px-5 py-2 bg-slate-50/50 dark:bg-gray-800/30">
+              <span class="text-xs font-semibold text-indigo-600 dark:text-indigo-400">${esc(key)}</span>
+              ${state.issueSummaries.get(key) ? `<span class="text-[10px] text-slate-400 dark:text-slate-500 ml-2">${esc(state.issueSummaries.get(key))}</span>` : ''}
+            </div>`;
+          for (const p of items) {
+            html += `<div class="flex items-center justify-between px-5 py-1.5 hover:bg-slate-50 dark:hover:bg-gray-800/30 transition-colors group">
+              <div class="flex items-center gap-2">
+                <span class="text-sm text-slate-700 dark:text-slate-300">${esc(p.description)}</span>
+                <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-gray-700 text-slate-500 dark:text-slate-400">${p.usageCount}x</span>
+              </div>
+              <button onclick="deletePref('${esc(p.issueKey)}','${esc(p.description)}')" class="opacity-0 group-hover:opacity-100 text-[10px] text-slate-400 hover:text-red-500 transition" title="Remove">\u2715</button>
+            </div>`;
+          }
+          html += '</div>';
+        }
+        list.innerHTML = html;
+      } catch (err) {
+        document.getElementById("prefs-list").innerHTML = `<div class="px-5 py-4 text-sm text-red-500">Failed to load: ${esc(err.message)}</div>`;
+      }
+    }
+
+    async function deletePref(issueKey, description) {
+      try {
+        await api("/api/preferences", { method: "DELETE", body: JSON.stringify({ issueKey, description }) });
+        await loadPrefs();
+      } catch (err) { toast("Failed: " + err.message, 'error'); }
+    }
+
+    async function clearPrefs() {
+      if (!confirm("Clear all learned descriptions? The AI will lose memory of your preferred phrasing.")) return;
+      try {
+        await api("/api/preferences", { method: "DELETE", body: JSON.stringify({}) });
+        await loadPrefs();
+        toast('Cleared all learned descriptions', 'info');
+      } catch (err) { toast("Failed: " + err.message, 'error'); }
+    }
+
+    // =========================================================================
+    // Init
+    // =========================================================================
+    fetchData();
+  </script>
+</body>
+</html>

@@ -6,6 +6,8 @@ import { pushIssue } from "./issue/push.ts";
 import { commentOnIssue } from "./issue/comment.ts";
 import { showTempo } from "./tempo/show.ts";
 import { logTempo } from "./tempo/log.ts";
+import { suggestTempo } from "./tempo/suggest.ts";
+import { tempoUI } from "./tempo/ui.ts";
 import { runConfig, getConfig, setConfig } from "./config.ts";
 import { configureProjectWorkdir } from "./project/workdir.ts";
 import { projectPullIssues } from "./project/pull.ts";
@@ -34,6 +36,9 @@ export function buildProgram(): Command {
       "  email",
       "  jiraPat",
       "  tempoPat",
+      "  scanDirs",
+      "  google",
+      "    clientId  clientSecret",
       "  tableWidths",
       "    key  type  status  sprint  estimate  summary",
       "  accountId  (read-only)",
@@ -50,6 +55,9 @@ export function buildProgram(): Command {
       "  email",
       "  jiraPat",
       "  tempoPat",
+      "  scanDirs",
+      "  google",
+      "    clientId  clientSecret",
       "  tableWidths",
       "    key  type  status  sprint  estimate  summary",
     ].join("\n"))
@@ -227,6 +235,52 @@ export function buildProgram(): Command {
         } = {},
       ) => {
         await logTempo(from, to, opts);
+      },
+    );
+
+  tempo
+    .command("suggest [from] [to]")
+    .description("AI-powered worklog suggestions from git activity, JIRA transitions, and historical patterns")
+    .option("--repo <paths...>", "Additional git repos to scan")
+    .option("--no-git", "Skip git scanning")
+    .option("--hours <duration>", "Target hours per day (default: 8h)")
+    .option("--model <name>", "Override LLM model (default: gpt-4o-mini)")
+    .option("--dry-run", "Show suggestions without submitting")
+    .action(
+      async (
+        from?: string,
+        to?: string,
+        opts: {
+          repo?: string[];
+          noGit?: boolean;
+          hours?: string;
+          model?: string;
+          dryRun?: boolean;
+        } = {},
+      ) => {
+        await suggestTempo(from, to, opts);
+      },
+    );
+
+  tempo
+    .command("ui [from] [to]")
+    .description("Open a Tempo-like timesheet UI in the browser")
+    .option("--port <number>", "Server port (default: random)", parseInt)
+    .option("--repo <paths...>", "Additional git repos to scan for suggestions")
+    .option("--hours <duration>", "Target hours per day (default: 8h)")
+    .option("--no-open", "Don't open browser automatically")
+    .action(
+      async (
+        from?: string,
+        to?: string,
+        opts: {
+          port?: number;
+          repo?: string[];
+          hours?: string;
+          open?: boolean;
+        } = {},
+      ) => {
+        await tempoUI(from, to, opts);
       },
     );
 

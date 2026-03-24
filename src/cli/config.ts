@@ -1,7 +1,9 @@
 import * as p from "@clack/prompts";
 import pc from "picocolors";
+import { $ } from "bun";
 import { saveConfig, loadConfig, configExists, resolvePat } from "../lib/config.ts";
 import { getMyself } from "../lib/jira.ts";
+import { buildGoogleAuthUrl, exchangeGoogleCode, isGoogleConnected } from "../lib/google.ts";
 import type { Config, TableWidths } from "../lib/types.ts";
 
 // ---------------------------------------------------------------------------
@@ -153,6 +155,101 @@ async function runTableWidthsEditor(config: Config): Promise<Required<TableWidth
 }
 
 // ---------------------------------------------------------------------------
+// Google Workspace setup wizard
+// ---------------------------------------------------------------------------
+
+async function runGoogleSetup(config: Config): Promise<{ googleClientId: string; googleClientSecret: string } | symbol> {
+  const clientId = await p.text({
+    message: "Google OAuth Client ID",
+    placeholder: "123456789.apps.googleusercontent.com",
+    initialValue: config.googleClientId ?? process.env.GOOGLE_CLIENT_ID ?? "",
+    validate: (v) => (!v?.includes(".apps.googleusercontent.com") ? "Should end with .apps.googleusercontent.com" : undefined),
+  });
+  if (p.isCancel(clientId)) return clientId as symbol;
+
+  const clientSecret = await p.text({
+    message: "Google OAuth Client Secret",
+    placeholder: "GOCSPX-...",
+    initialValue: config.googleClientSecret ?? process.env.GOOGLE_CLIENT_SECRET ?? "",
+    validate: (v) => (!v?.trim() ? "Required" : undefined),
+  });
+  if (p.isCancel(clientSecret)) return clientSecret as symbol;
+
+  // Save credentials first
+  const result = { googleClientId: clientId as string, googleClientSecret: clientSecret as string };
+  config.googleClientId = result.googleClientId;
+  config.googleClientSecret = result.googleClientSecret;
+  saveConfig(config);
+
+  // Check if already connected
+  if (isGoogleConnected()) {
+    p.log.success("Google Workspace is already connected.");
+    const reconnect = await p.confirm({ message: "Re-authorize?" });
+    if (p.isCancel(reconnect) || !reconnect) return result;
+  }
+
+  // Start OAuth flow
+  const connect = await p.confirm({ message: "Connect Google Workspace now? (opens browser)" });
+  if (p.isCancel(connect) || !connect) {
+    p.log.info("You can connect later via `jira tempo ui` → Settings → Connect.");
+    return result;
+  }
+
+  // Start a temporary server to handle the OAuth callback
+  const spinner = p.spinner();
+  let oauthResolve: (code: string) => void;
+  const codePromise = new Promise<string>((resolve) => { oauthResolve = resolve; });
+
+  const tempServer = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const url = new URL(req.url);
+      if (url.pathname === "/oauth/google/callback") {
+        const code = url.searchParams.get("code");
+        const error = url.searchParams.get("error");
+        if (error) {
+          return new Response(`<html><body><h2>Authorization failed</h2><p>${error}</p></body></html>`, { headers: { "Content-Type": "text/html" } });
+        }
+        if (code) {
+          oauthResolve!(code);
+          return new Response(`<html><body><h2>Connected!</h2><p>You can close this tab.</p><script>window.close()</script></body></html>`, { headers: { "Content-Type": "text/html" } });
+        }
+        return new Response("Missing code", { status: 400 });
+      }
+      return new Response("Not found", { status: 404 });
+    },
+  });
+
+  const redirectUri = `http://localhost:${tempServer.port}/oauth/google/callback`;
+  const authUrl = buildGoogleAuthUrl(config, redirectUri);
+
+  // Open browser
+  try { await $`xdg-open ${authUrl}`.quiet(); } catch {
+    try { await $`open ${authUrl}`.quiet(); } catch {
+      p.log.info(`Open this URL in your browser:\n${authUrl}`);
+    }
+  }
+
+  spinner.start("Waiting for Google authorization...");
+
+  try {
+    const code = await Promise.race([
+      codePromise,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Timed out after 2 minutes")), 120000)),
+    ]);
+
+    await exchangeGoogleCode(config, code, redirectUri);
+    spinner.stop(pc.green("Google Workspace connected!"));
+  } catch (err) {
+    spinner.stop("Authorization failed");
+    p.log.error(String(err));
+  }
+
+  tempServer.stop();
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // KEY_DEFS — single source of truth
 // ---------------------------------------------------------------------------
 
@@ -186,6 +283,52 @@ const KEY_DEFS: Record<string, KeyDef> = {
     prompt: promptTempoPat,
     get: (c) => c.tempoPat,
     set: (c, v) => { c.tempoPat = v as string; },
+  },
+  scanDirs: {
+    label: "Scan directories",
+    hint:  "parent dirs to scan for git repos",
+    prompt: async (config: Config) => {
+      const current = (config.scanDirs ?? []).map(d => d.path).join(", ");
+      const val = await p.text({
+        message: "Directories to scan for git repos (comma-separated)",
+        placeholder: "/home/user/Projects, /home/user/Work",
+        initialValue: current,
+      });
+      if (p.isCancel(val)) return val;
+      return (val as string).split(",").map(s => s.trim()).filter(Boolean).map(path => ({ path, enabled: true }));
+    },
+    get: (c) => c.scanDirs?.map(d => d.path).join(", ") || "(none)",
+    set: (c, v) => { c.scanDirs = v as Array<{ path: string; enabled: boolean }>; },
+  },
+  google: {
+    label: "Google Workspace",
+    hint:  "Calendar + Chat integration",
+    prompt: runGoogleSetup,
+    get: (c) => isGoogleConnected() ? "connected" : (c.googleClientId ? "configured (not connected)" : "(not set up)"),
+    set: (c, v) => {
+      const val = v as { googleClientId: string; googleClientSecret: string };
+      c.googleClientId = val.googleClientId;
+      c.googleClientSecret = val.googleClientSecret;
+    },
+  },
+  "google.clientId": {
+    label: "Google OAuth Client ID",
+    prompt: async (config: Config) => p.text({
+      message: "Google OAuth Client ID",
+      placeholder: "123456789.apps.googleusercontent.com",
+      initialValue: config.googleClientId ?? "",
+    }),
+    get: (c) => c.googleClientId,
+    set: (c, v) => { c.googleClientId = v as string; },
+  },
+  "google.clientSecret": {
+    label: "Google OAuth Client Secret",
+    prompt: async (config: Config) => p.text({
+      message: "Google OAuth Client Secret",
+      initialValue: config.googleClientSecret ?? "",
+    }),
+    get: (c) => c.googleClientSecret,
+    set: (c, v) => { c.googleClientSecret = v as string; },
   },
   tableWidths: {
     label: "Table column widths",

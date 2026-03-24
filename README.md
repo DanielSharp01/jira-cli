@@ -1,18 +1,40 @@
 # jira-cli
 
-> **⚠️ Vibe coded. I'm sorry I could not resist it 😅**
+A CLI + Web UI for Jira and Tempo with AI-powered worklog suggestions. Pull issues to Markdown, edit locally, push changes back with 3-way merge conflict resolution, bulk-manage project issues, and log time via Tempo — with an AI assistant that generates worklog suggestions from git activity, Jira transitions, Google Calendar, Google Chat, and historical patterns.
 
-A personal CLI for Jira and Tempo. Pull issues to Markdown, edit locally, push changes back with 3-way merge conflict resolution, bulk-manage project issues, and log time via Tempo.
-
-Built with Bun, Commander.js, and @clack/prompts.
+Built with Bun, Commander.js, @clack/prompts, LangChain, and Tailwind CSS.
 
 ---
 
+## Quickstart
+
+```bash
+# 1. Clone and install
+git clone <repo-url> && cd jira-cli
+bun install
+
+# 2. Copy .env.example and fill in your credentials
+cp .env.example .env
+# Edit .env with your JIRA_PAT, TEMPO_PAT, OPENAI_API_KEY
+
+# 3. Run interactive setup (configures Jira connection)
+bun run start config setup
+
+# 4. Open the timesheet UI
+bun run start tempo ui
+
+# 5. (Optional) Install as global command
+bun link
+jira tempo ui
+```
+
 ## Requirements
 
-- [Bun](https://bun.sh)
+- [Bun](https://bun.sh) (v1.0+)
 - A Jira Cloud or Data Center instance
 - A Tempo account (for time tracking)
+- An OpenAI API key (for AI suggestions)
+- Google Workspace account (optional, for Calendar + Chat integration)
 
 ## Installation
 
@@ -23,13 +45,14 @@ bun install
 Run directly:
 
 ```bash
-bun run src/index.ts <command>
+bun run start <command>
 ```
 
-Or use the `dev` script:
+Or install globally:
 
 ```bash
-bun run dev <command>
+bun link
+jira <command>
 ```
 
 ---
@@ -50,6 +73,20 @@ Interactive wizard that configures:
 
 Config is stored at `~/.config/jira-cli/config.json`.
 
+### Environment variables
+
+Add to `.env` (Bun auto-loads it):
+
+```bash
+JIRA_PAT=your-jira-api-token
+TEMPO_PAT=your-tempo-pat
+OPENAI_API_KEY=your-openai-key
+
+# Optional: Google Workspace integration
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-client-secret
+```
+
 ### Viewing and editing config
 
 ```bash
@@ -69,25 +106,10 @@ jira config set baseUrl https://yourcompany.atlassian.net
 | `jiraPat` | Literal value or `$ENV_VAR` reference |
 | `tempoPat` | Literal value or `$ENV_VAR` reference |
 | `accountId` | Auto-set during setup; read-only |
-| `tableWidths` | Column widths for issue tables (see below) |
-
-#### PAT as environment variable
-
-You can store token values as env var references instead of literal strings:
-
-```json
-{ "jiraPat": "$JIRA_PAT", "tempoPat": "$TEMPO_PAT" }
-```
-
-The CLI resolves these at runtime from the environment.
-
-#### Table column widths
-
-Customize the width of columns in issue tables:
-
-```bash
-jira config set tableWidths '{"key":10,"type":8,"status":14,"sprint":20,"estimate":8,"summary":60}'
-```
+| `tableWidths` | Column widths for issue tables |
+| `scanDirs` | Parent directories to scan for git repos |
+| `googleClientId` | Google OAuth Client ID |
+| `googleClientSecret` | Google OAuth Client Secret |
 
 ---
 
@@ -141,25 +163,6 @@ Shows existing comments and prompts you to add a new one. Supports `@@mention` s
 jira issue comment ABC-123
 ```
 
-#### Issue Markdown format
-
-```markdown
-# KEY - Summary
-
-Type: Story
-Status: In Progress
-Assignee: user@company.com
-Priority: High
-Estimate: 3h
-Sprint: Sprint 42 (2026-03-16 – 2026-03-29)
-Reporter: reporter@company.com
-Created: 2026-03-15
-
----
-
-Description text here
-```
-
 ---
 
 ### Projects
@@ -171,11 +174,11 @@ jira project pull [project] [scope]  # Bulk pull issues
 
 #### `project workdir`
 
-Sets the local folder where pulled issues for a project are saved. Optionally creates `Current/` and `Done/` subfolders — issues are automatically moved between them when their status category changes.
+Sets the local folder where pulled issues for a project are saved. Optionally creates `Current/` and `Done/` subfolders.
 
 ```bash
 jira project workdir ABC ~/notes/abc
-jira project workdir ABC ~/notes/abc --status-folders   # Enable Current/Done subfolders
+jira project workdir ABC ~/notes/abc --status-folders
 ```
 
 #### `project pull`
@@ -186,7 +189,7 @@ Bulk-pulls issues to local Markdown files. Issues that have not changed since th
 jira project pull ABC sprint
 jira project pull ABC backlog
 jira project pull ABC all
-jira project pull ABC "Sprint 42"     # Named sprint
+jira project pull ABC "Sprint 42"
 ```
 
 **Filter options:**
@@ -195,22 +198,11 @@ jira project pull ABC "Sprint 42"     # Named sprint
 |--------|-------------|
 | `--from <date>` | Issues updated on or after this date |
 | `--to <date>` | Issues updated on or before this date |
-| `--fromKey <KEY>` | Issues with key ≥ this value |
-| `--toKey <KEY>` | Issues with key ≤ this value |
 | `--status <values>` | Comma-separated status filter (prefix `not:` to exclude) |
-| `--type <values>` | Comma-separated issue type filter (prefix `not:` to exclude) |
-| `--estimated <mode>` | `yes` / `no` / `parent` (subtasks with estimated parent) |
+| `--type <values>` | Comma-separated issue type filter |
+| `--estimated <mode>` | `yes` / `no` / `parent` |
 | `--name <text>` | Filter by summary (supports `"quoted phrases"`) |
-| `--description <text>` | Filter by description text |
 | `--pick` | Open interactive picker before pulling |
-
-Examples:
-
-```bash
-jira project pull ABC sprint --status "In Progress,Review"
-jira project pull ABC backlog --estimated no --type Story
-jira project pull ABC all --status "not:Done" --from 2026-03-01
-```
 
 ---
 
@@ -224,101 +216,54 @@ jira explore ABC
 jira explore ABC sprint
 ```
 
-Walks you through picking a project, scope, and issue. On the selected issue you can: describe, add a comment, change status, or pull to a local file.
-
-**Filter options** (same as `project pull`):
-
-```bash
-jira explore ABC sprint --status "In Progress"
-jira explore ABC --type Bug --estimated yes
-jira explore ABC --name "login flow"
-```
-
-**Non-interactive mode** — prints the issue table to stdout:
-
-```bash
-jira explore ABC sprint --no-interactive
-```
+Supports the same filter options as `project pull`.
 
 ---
 
 ### Tempo
 
 ```bash
-jira tempo show [from] [to]    # Show logged hours
-jira tempo log [from] [to]     # Log hours interactively or from file
+jira tempo show [from] [to]       # Show logged hours
+jira tempo log [from] [to]        # Log hours interactively or from file
+jira tempo suggest [from] [to]    # AI-powered worklog suggestions (CLI)
+jira tempo ui [from] [to]         # Open web-based timesheet UI
 ```
 
 #### Date expressions
 
-Both commands accept flexible date arguments:
+All tempo commands accept flexible date arguments:
 
 | Expression | Meaning |
 |------------|---------|
 | `today` | Today |
 | `yesterday` | Yesterday |
-| `week` | Start of current week |
-| `last-week` | Start of last week |
-| `month` | Start of current month |
-| `last-month` | Start of last month |
+| `week` / `last-week` | Start of current/last week |
+| `month` / `last-month` | Start of current/last month |
 | `year` | Start of current year |
 | `YYYY-MM-DD` | Specific date |
 | `-2-month` | 2 months ago |
-| `3-week` | 3 weeks from now |
-| `week-end` | End of current week |
-| `month-end` | End of current month |
-
-When a single argument is given, it's the start date and the end date defaults to today (or the start date itself if it's in the future).
-
-```bash
-jira tempo show month             # Start of month → today
-jira tempo show month today       # Explicit range
-jira tempo show 2026-03-01 2026-03-20
-jira tempo log week
-jira tempo log month month-end    # Current month including future days
-jira tempo log last-month month   # Last month up to start of this month
-```
+| `week-end` / `month-end` | End of period |
 
 #### `tempo show`
 
 Displays logged time for the date range.
 
-| Option | Description |
-|--------|-------------|
-| `--file <path>` | Export to a Markdown file |
-| `--stdout` | Print Markdown to stdout |
-| `--days <mode>` | `all` / `working` (default) / `unlogged` / `no-logs` |
-| `--logged <duration>` | Threshold for "fully logged" day (default: `8h`) |
-| `--short` | Compact single-line-per-day view |
-
 ```bash
 jira tempo show month --short
+jira tempo show week --days unlogged
 jira tempo show month --file ~/tempo/march.md
-jira tempo show week --days all
 ```
 
 #### `tempo log`
 
-Logs hours for the date range. Can be driven interactively, from a file, or via stdin.
-
-| Option | Description |
-|--------|-------------|
-| `--file <path>` | Read entries from a Markdown file |
-| `--stdin` | Read entries from stdin |
-| `--days <mode>` | `all` / `working` / `unlogged` (default) / `no-logs` |
-| `--logged <duration>` | Threshold for "fully logged" (default: `8h`) |
-| `--skip-when <mode>` | `8h` — skip fully-logged days; `any` — skip days with any log |
-| `--exact` | File day headers must exactly match the filtered working days |
-| `--prompt` | Prompt for days that exist in the filter but are missing from the file |
+Logs hours interactively, from a file, or via stdin.
 
 ```bash
+jira tempo log week
 jira tempo log month --file ~/tempo/march.md
-jira tempo log week --stdin
-jira tempo log month --skip-when 8h
-jira tempo log week --prompt
 ```
 
-#### Worklog file format
+**Worklog file format:**
 
 ```markdown
 # 2026-03-19
@@ -329,10 +274,98 @@ jira tempo log week --prompt
 - ABC-124 More fixes 3h
 ```
 
-Entry format: `KEY description duration` (leading `- ` is optional).
-Duration formats: `2h`, `30m`, `1h30m`, `1.5h`.
+#### `tempo suggest`
 
-When logging from a file, the date range is inferred from the section headers — no need to specify dates separately. Worklogs are created sequentially starting at 09:00; each entry starts where the previous one ends.
+AI-powered worklog suggestions from multiple evidence sources.
+
+```bash
+jira tempo suggest week              # Suggest for current week
+jira tempo suggest month --dry-run   # Preview without submitting
+jira tempo suggest week --no-git     # Skip git scanning
+```
+
+| Option | Description |
+|--------|-------------|
+| `--repo <paths...>` | Additional git repos to scan |
+| `--no-git` | Skip git scanning |
+| `--hours <duration>` | Target hours per day (default: `8h`) |
+| `--model <name>` | Override LLM model |
+| `--dry-run` | Show suggestions without submitting |
+
+**Evidence sources:**
+
+| Source | What it provides |
+|--------|-----------------|
+| Git commits | Commit messages, branch names, changed files, work type |
+| Uncommitted changes | Work in progress (modified/staged files) |
+| Jira status transitions | Issues the user moved between statuses |
+| Sprint issues | Issues assigned to the user in active sprints |
+| User comments | Issues the user commented on |
+| Historical worklogs | 3-month lookback with recurring pattern detection (daily/weekly cadence) |
+| Google Calendar | Meeting events with attendees and durations |
+| Google Chat | Channel message activity |
+
+The AI uses all available evidence to generate plausible worklog entries, matching the user's preferred description style (learned from past worklogs stored in SQLite).
+
+#### `tempo ui`
+
+Opens a local web UI with a Tempo-like timesheet grid.
+
+```bash
+jira tempo ui                    # Current week
+jira tempo ui month              # Current month
+jira tempo ui --port 3000        # Specific port
+jira tempo ui --no-open          # Don't auto-open browser
+```
+
+| Option | Description |
+|--------|-------------|
+| `--port <number>` | Server port (default: random) |
+| `--repo <paths...>` | Additional git repos to scan |
+| `--hours <duration>` | Target hours per day (default: `8h`) |
+| `--no-open` | Don't open browser automatically |
+
+**Web UI features:**
+
+- **Timesheet grid** — Issue rows x day columns with logged hours per cell
+- **Week/Month view** — Toggle between week (detailed) and month (compact) layouts
+- **Dark mode** — Toggle with persistent preference
+- **Inline editing** — Click any cell to edit duration + description
+- **Draft mode** — Edits and accepted suggestions become drafts (green). Nothing submits until you click "Submit All"
+- **AI suggestions** — Click "Generate" to fill empty cells with AI-powered suggestions (blue). Natural language instructions supported (e.g., "Fill March with my usual pattern. I was on vacation 17-18")
+- **Accept All / per-cell** — Accept all suggestions at once or individually
+- **Real-time SSE progress** — See each evidence gathering phase as it runs
+- **Copy Previous Week** — Duplicate last week's worklogs as drafts
+- **Issue search** — Add new issue rows with autocomplete from Jira
+- **Issue titles** — Issue summaries shown below keys in the grid
+- **Keyboard navigation** — Arrow keys, Enter to edit, `a` to accept, `x` to reject, `d` to delete
+- **CSV export** — Download current grid data as CSV
+- **Settings panel** — Manage scan directories, Google Workspace connection, and learned description preferences
+
+---
+
+## Google Workspace Integration
+
+Connect Google Calendar and Chat to improve AI suggestions with meeting and communication data.
+
+### Setup
+
+1. Go to [console.cloud.google.com](https://console.cloud.google.com)
+2. Create or select a project
+3. Enable **Google Calendar API** and **Google Chat API**
+4. Go to **OAuth consent screen** → choose **Internal** (for Workspace)
+5. Go to **Credentials** → **Create Credentials** → **OAuth client ID** → type **Desktop app**
+6. Add the Client ID and Secret to `.env`:
+
+```bash
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-client-secret
+```
+
+7. Open the web UI (`jira tempo ui`) → Settings (gear icon) → Click **Connect** under Google Workspace
+8. Authorize with your company Google account
+
+Once connected, calendar events and chat activity are automatically included in AI suggestion evidence.
 
 ---
 
@@ -344,3 +377,19 @@ When logging from a file, the date range is inferred from the section headers �
 | `~/.config/jira-cli/active.json` | Issue key → local file path mapping |
 | `~/.config/jira-cli/projects.json` | Per-project working dirs and status folder config |
 | `~/.config/jira-cli/remote/<KEY>.md` | Remote snapshots used for 3-way merge |
+| `~/.config/jira-cli/jira-cli.db` | SQLite database (learned descriptions, OAuth tokens) |
+
+---
+
+## Troubleshooting
+
+| Error | Fix |
+|-------|-----|
+| "No config found" | Run `jira config setup` to create initial configuration |
+| "OPENAI_API_KEY is not set" | Add `OPENAI_API_KEY=sk-...` to your `.env` file |
+| "Could not resolve issue: PROJ-123" | Check the issue key exists in Jira and your account has access |
+| "Google token expired or revoked" | Open UI → Settings → Click "Connect" to re-authorize |
+| "googleClientId not configured" | Add `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` to `.env` |
+| Port already in use | Use `--port <number>` to specify a different port: `jira tempo ui --port 3001` |
+| AI suggestions use wrong model | Set `OPENAI_MODEL=gpt-4o` in `.env` to override (default: `gpt-4o-mini`) |
+| Database errors | Delete `~/.config/jira-cli/jira-cli.db` — it will be recreated automatically |
