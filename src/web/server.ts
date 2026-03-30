@@ -2,7 +2,7 @@ import type { Config, JiraIssue } from "../lib/types.ts";
 import { getWorklogsForRange, getWorkingDays, createWorklog, deleteWorklog } from "../lib/tempo.ts";
 import { getIssueKeysByIds, getIssueIdsByKeys, searchIssues, getIssue, getTransitions, applyTransition, addComment } from "../lib/jira.ts";
 import type { AdfDoc } from "../lib/types.ts";
-import { gatherAllEvidence, gatherHistoricalPatterns, discoverGitRepos } from "../lib/signals.ts";
+import { gatherAllEvidence, gatherHistoricalPatterns, discoverGitRepos } from "../lib/evidence.ts";
 import { generateSuggestions } from "../lib/suggest.ts";
 import { trackDescription, getAllPreferredDescriptions, deleteDescriptionPref, clearAllDescriptionPrefs, trackSuggestionFeedback, getScanDirs, addScanDirDb, removeScanDirDb, toggleScanDirDb, migrateScanDirsToDb } from "../lib/db.ts";
 import type { SuggestionFeedbackEntry } from "../lib/db.ts";
@@ -141,24 +141,62 @@ export function startServer(opts: ServerOpts): { port: number } {
 
       // GET /api/issues?q=
       if (path === "/api/issues" && req.method === "GET") {
-        const q = url.searchParams.get("q");
+        const q = url.searchParams.get("q")?.trim();
         if (!q || q.length < 2) return jsonResponse({ issues: [] });
 
-        try {
-          // Try as issue key first, then search summary
-          const jql = /^[A-Z][A-Z0-9]+-\d+$/.test(q.toUpperCase())
-            ? `key = "${q.toUpperCase()}"`
-            : `summary ~ "${q.replace(/"/g, '\\"')}" ORDER BY updated DESC`;
-          const issues = await searchIssues(config, jql, 15);
-          const result = issues.map(i => ({
-            key: i.key,
-            id: i.id,
-            summary: i.fields.summary,
-          }));
-          return jsonResponse({ issues: result });
-        } catch (err) {
-          return errorResponse(err);
+        const fmt = (i: JiraIssue) => ({ key: i.key, id: i.id, summary: i.fields.summary });
+
+        const upper = q.toUpperCase();
+        const escaped = q.replace(/"/g, '\\"');
+        const MAX = 30;
+
+        // Build parallel JQL queries
+        const queries: string[] = [];
+
+        if (/^[A-Z][A-Z0-9]+-\d+$/.test(upper)) {
+          queries.push(`key = "${upper}"`);
         }
+
+        if (/^[A-Z][A-Z0-9]+-\d+/.test(upper)) {
+          const prefix = upper.match(/^([A-Z][A-Z0-9]+-\d+)/)![1]!;
+          queries.push(`key >= "${prefix}" AND key <= "${prefix}999" ORDER BY key ASC`);
+        }
+
+        if (/^[A-Z][A-Z0-9]+-?$/.test(upper)) {
+          const proj = upper.replace(/-$/, "");
+          // User's own issues in project first, then all project issues
+          queries.push(`project = "${proj}" AND assignee = currentUser() ORDER BY updated DESC`);
+          queries.push(`project = "${proj}" ORDER BY updated DESC`);
+        }
+
+        // Text search across summary, description, comments
+        queries.push(`text ~ "${escaped}" ORDER BY updated DESC`);
+
+        if (q.length >= 3) {
+          queries.push(`summary ~ "${escaped}*" ORDER BY updated DESC`);
+        }
+
+        // Run all queries in parallel, merge and deduplicate
+        const dedupe = new Set<string>();
+        const results: Array<{ key: string; id: string; summary: string }> = [];
+
+        const settled = await Promise.allSettled(
+          [...new Set(queries)].map(jql => searchIssues(config, jql, MAX).catch(() => [] as JiraIssue[]))
+        );
+
+        for (const outcome of settled) {
+          if (outcome.status !== "fulfilled") continue;
+          for (const issue of outcome.value) {
+            if (!dedupe.has(issue.key)) {
+              dedupe.add(issue.key);
+              results.push(fmt(issue));
+              if (results.length >= MAX) break;
+            }
+          }
+          if (results.length >= MAX) break;
+        }
+
+        return jsonResponse({ issues: results });
       }
 
       // GET /api/issues/initial?from=&to=
@@ -167,9 +205,9 @@ export function startServer(opts: ServerOpts): { port: number } {
         const to = url.searchParams.get("to");
         try {
           const [sprintIssues, recentIssues] = await Promise.all([
-            searchIssues(config, `assignee = currentUser() AND sprint in openSprints() ORDER BY updated DESC`, 30).catch(() => [] as JiraIssue[]),
+            searchIssues(config, `assignee = currentUser() AND sprint in openSprints() ORDER BY updated DESC`, 50).catch(() => [] as JiraIssue[]),
             from && to
-              ? searchIssues(config, `assignee = currentUser() AND status changed DURING ("${from}", "${to}") ORDER BY updated DESC`, 20).catch(() => [] as JiraIssue[])
+              ? searchIssues(config, `assignee = currentUser() AND status changed DURING ("${from}", "${to}") ORDER BY updated DESC`, 30).catch(() => [] as JiraIssue[])
               : Promise.resolve([] as JiraIssue[]),
           ]);
 

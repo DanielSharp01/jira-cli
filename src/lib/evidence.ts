@@ -30,7 +30,7 @@ export interface GitUncommitted {
   linesRemoved: number;
 }
 
-export interface GitSignal {
+export interface GitEvidence {
   repoPath: string;
   commits: GitCommit[];
   uncommitted: GitUncommitted | null;
@@ -44,7 +44,7 @@ export interface StatusTransition {
   date: string;
 }
 
-export interface JiraActivitySignal {
+export interface JiraEvidence {
   statusTransitions: StatusTransition[];
   sprintIssues: Array<{ issueKey: string; summary: string; status: string; type: string; estimate: string | null; descriptionSnippet: string | null }>;
   commentedIssues: Array<{ issueKey: string; summary: string; date: string }>;
@@ -61,12 +61,12 @@ export interface RecurringPattern {
   primaryDays?: string[];
 }
 
-export interface HistoricalSignal {
+export interface HistoricalEvidence {
   recentWorklogs: Array<{ issueKey: string; description: string; durationSeconds: number; date: string }>;
   recurringPatterns: RecurringPattern[];
 }
 
-export interface GoogleSignal {
+export interface GoogleEvidence {
   calendar: CalendarEvent[];
   chat: ChatActivity[];
 }
@@ -75,10 +75,10 @@ export interface EvidenceBundle {
   dateRange: { from: string; to: string };
   workingDays: string[];
   existingWorklogs: Map<string, Array<{ issueKey: string; seconds: number; description: string }>>;
-  git: GitSignal[];
-  jiraActivity: JiraActivitySignal;
-  historicalPatterns: HistoricalSignal;
-  google?: GoogleSignal;
+  git: GitEvidence[];
+  jiraActivity: JiraEvidence;
+  historicalPatterns: HistoricalEvidence;
+  google?: GoogleEvidence;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,7 +124,7 @@ async function getGitUserEmail(repoPath: string): Promise<string> {
   }
 }
 
-async function scanRepo(repoPath: string, from: string, to: string): Promise<GitSignal> {
+async function scanRepo(repoPath: string, from: string, to: string): Promise<GitEvidence> {
   const email = await getGitUserEmail(repoPath);
   const commits: GitCommit[] = [];
 
@@ -225,18 +225,18 @@ async function scanRepo(repoPath: string, from: string, to: string): Promise<Git
   return { repoPath, commits, uncommitted };
 }
 
-export async function gatherGitSignals(
+export async function gatherGitEvidences(
   repoPaths: string[],
   from: string,
   to: string
-): Promise<GitSignal[]> {
+): Promise<GitEvidence[]> {
   const results = await Promise.all(
     repoPaths.map(async (path) => {
       if (!(await isGitRepo(path))) return null;
       return scanRepo(path, from, to);
     })
   );
-  return results.filter((r): r is GitSignal => r !== null);
+  return results.filter((r): r is GitEvidence => r !== null);
 }
 
 // ---------------------------------------------------------------------------
@@ -247,7 +247,7 @@ export async function gatherJiraActivity(
   config: Config,
   from: string,
   to: string
-): Promise<JiraActivitySignal> {
+): Promise<JiraEvidence> {
   // Run JQL queries in parallel
   const [transitionedIssues, sprintIssuesRaw] = await Promise.all([
     searchIssues(config, `assignee = currentUser() AND status changed DURING ("${from}", "${to}")`, 50).catch(() => [] as JiraIssue[]),
@@ -348,7 +348,7 @@ export async function gatherJiraActivity(
 export async function gatherHistoricalPatterns(
   config: Config,
   from: string,
-): Promise<HistoricalSignal> {
+): Promise<HistoricalEvidence> {
   // Look back 3 months from the start date
   const startDate = new Date(`${from}T12:00:00`);
   const historyFrom = new Date(startDate);
@@ -558,7 +558,7 @@ export async function gatherAllEvidence(
   onProgress?: ProgressCallback,
 ): Promise<EvidenceBundle> {
   onProgress?.("git", `Scanning ${repoPaths.length} git repo(s)...`);
-  const gitPromise = repoPaths.length > 0 ? gatherGitSignals(repoPaths, from, to) : Promise.resolve([]);
+  const gitPromise = repoPaths.length > 0 ? gatherGitEvidences(repoPaths, from, to) : Promise.resolve([]);
 
   onProgress?.("jira", "Querying Jira status transitions and sprint issues...");
   const jiraPromise = gatherJiraActivity(config, from, to);
@@ -571,7 +571,7 @@ export async function gatherAllEvidence(
   const daysPromise = getWorkingDays(config, from, to);
 
   // Google Calendar + Chat (only if connected)
-  let googlePromise: Promise<GoogleSignal | undefined> = Promise.resolve(undefined);
+  let googlePromise: Promise<GoogleEvidence | undefined> = Promise.resolve(undefined);
   if (isGoogleConnected()) {
     onProgress?.("google", "Fetching Google Calendar events and Chat activity...");
     googlePromise = (async () => {

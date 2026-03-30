@@ -15,17 +15,17 @@ bun install
 
 # 2. Copy .env.example and fill in your credentials
 cp .env.example .env
-# Edit .env with your JIRA_PAT, TEMPO_PAT, OPENAI_API_KEY
+# Edit .env with your JIRA_PAT, TEMPO_PAT, and optionally OPENAI_API_KEY or ANTHROPIC_API_KEY
 
 # 3. Run interactive setup (configures Jira connection)
 bun run start config setup
 
-# 4. Open the timesheet UI
-bun run start tempo ui
+# 4. Open the timesheet web UI
+bun run start tempo web
 
 # 5. (Optional) Install as global command
 bun link
-jira tempo ui
+jira tempo web
 ```
 
 ## Requirements
@@ -33,7 +33,7 @@ jira tempo ui
 - [Bun](https://bun.sh) (v1.0+)
 - A Jira Cloud or Data Center instance
 - A Tempo account (for time tracking)
-- An OpenAI API key (for AI suggestions)
+- An OpenAI or Anthropic API key, or [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed (for AI suggestions)
 - Google Workspace account (optional, for Calendar + Chat integration)
 
 ## Installation
@@ -80,7 +80,10 @@ Add to `.env` (Bun auto-loads it):
 ```bash
 JIRA_PAT=your-jira-api-token
 TEMPO_PAT=your-tempo-pat
+
+# AI suggestions: set ONE of these, or use Claude Code CLI with no key
 OPENAI_API_KEY=your-openai-key
+# ANTHROPIC_API_KEY=your-anthropic-key
 
 # Optional: Google Workspace integration
 GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
@@ -226,7 +229,8 @@ Supports the same filter options as `project pull`.
 jira tempo show [from] [to]       # Show logged hours
 jira tempo log [from] [to]        # Log hours interactively or from file
 jira tempo suggest [from] [to]    # AI-powered worklog suggestions (CLI)
-jira tempo ui [from] [to]         # Open web-based timesheet UI
+jira tempo web [from] [to]        # Open web-based timesheet UI
+jira tempo evidence [from] [to]   # Show gathered work evidence
 ```
 
 #### Date expressions
@@ -307,15 +311,15 @@ jira tempo suggest week --no-git     # Skip git scanning
 
 The AI uses all available evidence to generate plausible worklog entries, matching the user's preferred description style (learned from past worklogs stored in SQLite).
 
-#### `tempo ui`
+#### `tempo web`
 
 Opens a local web UI with a Tempo-like timesheet grid.
 
 ```bash
-jira tempo ui                    # Current week
-jira tempo ui month              # Current month
-jira tempo ui --port 3000        # Specific port
-jira tempo ui --no-open          # Don't auto-open browser
+jira tempo web                   # Current week
+jira tempo web month             # Current month
+jira tempo web --port 3000       # Specific port
+jira tempo web --no-open         # Don't auto-open browser
 ```
 
 | Option | Description |
@@ -342,6 +346,50 @@ jira tempo ui --no-open          # Don't auto-open browser
 - **CSV export** — Download current grid data as CSV
 - **Settings panel** — Manage scan directories, Google Workspace connection, and learned description preferences
 
+#### `tempo evidence`
+
+Shows the gathered work evidence used by AI suggestions — useful for debugging, or for pasting into any LLM manually (no API key needed).
+
+```bash
+jira tempo evidence week                   # Show evidence for current week
+jira tempo evidence month --prompt         # Include full system prompt (pastable)
+jira tempo evidence week --prompt --copy   # Copy to clipboard
+```
+
+| Option | Description |
+|--------|-------------|
+| `--repo <paths...>` | Additional git repos to scan |
+| `--no-git` | Skip git scanning |
+| `--hours <duration>` | Target hours per day (default: `8h`) |
+| `--prompt` | Include full LLM system prompt (pastable into any LLM) |
+| `--copy` | Copy output to clipboard |
+
+---
+
+## AI Provider Configuration
+
+AI suggestions work with three providers, auto-detected in this order:
+
+| Provider | Setup | When used |
+|----------|-------|-----------|
+| **Anthropic API** | Set `ANTHROPIC_API_KEY` in `.env` | Model starts with `claude-` or only Anthropic key is set |
+| **OpenAI API** | Set `OPENAI_API_KEY` in `.env` | Default when OpenAI key is present |
+| **Claude Code CLI** | Install [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and log in | No API keys set, `claude` binary found |
+
+Override the model with `--model`:
+
+```bash
+jira tempo suggest week --model claude-sonnet-4-20250514
+jira tempo suggest week --model gpt-5.4-mini
+```
+
+Or set a default in `.env`:
+
+```bash
+OPENAI_MODEL=gpt-5.4-mini
+ANTHROPIC_MODEL=claude-sonnet-4-20250514
+```
+
 ---
 
 ## Google Workspace Integration
@@ -362,7 +410,7 @@ GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=your-client-secret
 ```
 
-7. Open the web UI (`jira tempo ui`) → Settings (gear icon) → Click **Connect** under Google Workspace
+7. Open the web UI (`jira tempo web`) → Settings (gear icon) → Click **Connect** under Google Workspace
 8. Authorize with your company Google account
 
 Once connected, calendar events and chat activity are automatically included in AI suggestion evidence.
@@ -386,10 +434,10 @@ Once connected, calendar events and chat activity are automatically included in 
 | Error | Fix |
 |-------|-----|
 | "No config found" | Run `jira config setup` to create initial configuration |
-| "OPENAI_API_KEY is not set" | Add `OPENAI_API_KEY=sk-...` to your `.env` file |
+| "No API key found and Claude CLI is not installed" | Set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` in `.env`, or install [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) |
 | "Could not resolve issue: PROJ-123" | Check the issue key exists in Jira and your account has access |
 | "Google token expired or revoked" | Open UI → Settings → Click "Connect" to re-authorize |
 | "googleClientId not configured" | Add `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` to `.env` |
-| Port already in use | Use `--port <number>` to specify a different port: `jira tempo ui --port 3001` |
-| AI suggestions use wrong model | Set `OPENAI_MODEL=gpt-4o` in `.env` to override (default: `gpt-4o-mini`) |
+| Port already in use | Use `--port <number>` to specify a different port: `jira tempo web --port 3001` |
+| AI suggestions use wrong model | Set `OPENAI_MODEL=gpt-5.4-mini` or `ANTHROPIC_MODEL=claude-sonnet-4-20250514` in `.env`, or use `--model` flag |
 | Database errors | Delete `~/.config/jira-cli/jira-cli.db` — it will be recreated automatically |

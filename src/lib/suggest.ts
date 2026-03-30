@@ -1,13 +1,13 @@
 import { SystemMessage, HumanMessage } from "@langchain/core/messages";
-import { createSuggestLLM } from "./ai.ts";
+import { createSuggestLLM, detectProvider, invokeClaudeCLI } from "./ai.ts";
 import { SuggestResponseSchema } from "./suggest-schemas.ts";
 import type { SuggestResponse } from "./suggest-schemas.ts";
-import type { EvidenceBundle } from "./signals.ts";
-import { serializeEvidence, extractIssueKeys } from "./signals.ts";
+import type { EvidenceBundle } from "./evidence.ts";
+import { serializeEvidence, extractIssueKeys } from "./evidence.ts";
 import { getAllPreferredDescriptions, getSuggestionFeedbackSummary } from "./db.ts";
 import { parseDuration, formatDuration } from "./duration.ts";
 
-const SYSTEM_PROMPT = `You are a developer's time-tracking assistant. Given evidence of their work activity, generate plausible Tempo worklog entries.
+export const SYSTEM_PROMPT = `You are a developer's time-tracking assistant. Given evidence of their work activity, generate plausible Tempo worklog entries.
 
 RULES:
 1. Each working day should total exactly the target hours (usually 8h).
@@ -18,7 +18,7 @@ RULES:
 6. If an entry corresponds to a scheduled calendar meeting, provide its exact startTime (e.g. "14:30:00"). For general work, leave startTime null.
 7. CALENDAR EVENTS ARE WORK: Log calendar events that occur during working hours. 
    - If the event title contains a known issue key, use that key.
-   - If it does NOT contain a key, assign it to an internal overhead/meeting issue key from the KNOWN ISSUES list (prefer keys like INT-* or historically used meeting keys).
+   - If it does NOT contain a key, assign it to a project-adjacent issue key (meetings, planning, admin) from the KNOWN ISSUES list (prefer keys like INT-* or historically used meeting keys).
    - Use the event summary as the description.
    - Set confidence to "high" for calendar events.
 
@@ -40,7 +40,7 @@ RECURRING PATTERNS:
 - Historical recurring patterns are just FALLBACKS.
 - NEVER use generic historical meeting patterns (e.g., "Monthly aggregate", "Weekly meetings") if you have actual Calendar Events for that day. 
 - You may use specific daily recurring patterns (like "Daily Standup") only if they do not duplicate an existing Calendar Event.
-- Internal tickets (INT-*) are overhead entries — add them for meetings and admin, then fill remaining hours with project work.
+- Project-adjacent tickets (INT-*) cover meetings, planning, and admin — add them alongside project work.
 
 STRATEGY:
 1. First, map actual scheduled Calendar Events. These are concrete evidence and take absolute highest precedence.
@@ -154,8 +154,7 @@ export async function generateSuggestions(
   model?: string,
   userInstructions?: string,
 ): Promise<SuggestResponse> {
-  const llm = createSuggestLLM(model);
-  const structuredLlm = llm.withStructuredOutput(SuggestResponseSchema);
+  const provider = detectProvider(model);
 
   // Pre-process instructions (may modify evidence.workingDays for vacation/PTO)
   const processedInstructions = preprocessInstructions(userInstructions, evidence);
@@ -205,10 +204,18 @@ export async function generateSuggestions(
     // Feedback is optional enrichment
   }
 
-  const result = await structuredLlm.invoke([
-    new SystemMessage(SYSTEM_PROMPT),
-    new HumanMessage(evidenceContext),
-  ]);
+  let result: SuggestResponse;
+
+  if (provider === "claude-cli") {
+    result = await invokeClaudeCLI(SYSTEM_PROMPT, evidenceContext, SuggestResponseSchema, model);
+  } else {
+    const llm = createSuggestLLM(model);
+    const structuredLlm = llm.withStructuredOutput(SuggestResponseSchema);
+    result = await structuredLlm.invoke([
+      new SystemMessage(SYSTEM_PROMPT),
+      new HumanMessage(evidenceContext),
+    ]);
+  }
 
   // Compute known issue keys for validation
   const knownKeys = new Set<string>();

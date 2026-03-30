@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en" class="dark h-full">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -32,7 +32,7 @@
     .spinner { animation: spin .7s linear infinite; }
     .fade-in { animation: fadeIn .2s ease-out; }
     .pulse-subtle { animation: pulse-subtle 2s ease-in-out infinite; }
-    .grid-scroll::-webkit-scrollbar { height: 6px; }
+    .grid-scroll::-webkit-scrollbar { height: 6px; width: 6px; }
     .grid-scroll::-webkit-scrollbar-track { background: transparent; }
     .grid-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 99px; }
     .dark .grid-scroll::-webkit-scrollbar-thumb { background: #374151; }
@@ -41,6 +41,13 @@
     .dark #tooltip { background: #f1f5f9; color: #0f172a; }
     .cell-actions { opacity: 0; transition: opacity .15s; }
     tr:hover .cell-actions, td:hover .cell-actions { opacity: 1; }
+    .fill-handle { position: absolute; right: -1px; top: 50%; transform: translateY(-50%); width: 8px; height: 8px; border-radius: 2px; background: #6366f1; cursor: crosshair; opacity: 0; transition: opacity .15s; z-index: 8; }
+    td:hover .fill-handle { opacity: 1; }
+    td.drag-over { box-shadow: inset 0 0 0 2px #60a5fa; background-color: rgba(96,165,250,.08); }
+    .dark td.drag-over { box-shadow: inset 0 0 0 2px #3b82f6; background-color: rgba(59,130,246,.1); }
+    td.fill-highlight { background-color: #eef2ff !important; box-shadow: inset 0 0 0 2px #a5b4fc; }
+    .dark td.fill-highlight { background-color: rgba(99,102,241,.15) !important; box-shadow: inset 0 0 0 2px #6366f1; }
+    td.drag-source { opacity: .5; }
     @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
     @keyframes slideOut { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100%); opacity: 0; } }
     .toast-in { animation: slideIn .25s ease-out; }
@@ -53,7 +60,7 @@
   <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
 </head>
 <body class="bg-slate-50 dark:bg-gray-950 text-slate-800 dark:text-slate-200 h-screen overflow-hidden font-sans antialiased transition-colors duration-200">
-  <div id="root"></div>
+  <div id="root" class="h-full"></div>
   <div id="tooltip"></div>
   <div id="toast-container" class="fixed bottom-5 right-5 z-[9999] flex flex-col gap-2 pointer-events-none"></div>
 
@@ -250,6 +257,7 @@
       prefsOpen: false,
       preferences: [],
       toasts: [],
+      fillState: null,
     };
 
     function reducer(state, action) {
@@ -372,6 +380,8 @@
         }
         case 'REMOVE_PENDING_DELETES':
           return { ...state, pendingDeletes: state.pendingDeletes.filter(id => !action.ids.includes(id)) };
+        case 'SET_FILL_STATE':
+          return { ...state, fillState: action.fillState };
         default:
           return state;
       }
@@ -523,19 +533,112 @@
     }
 
     // =========================================================================
+    // Date Picker
+    // =========================================================================
+    const DAY_LABELS = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
+
+    function DatePicker({ open, onClose, onSelectDate, activeFrom, activeTo }) {
+      const today = todayStr();
+      const initDate = new Date(`${activeFrom}T12:00:00`);
+      const [viewYear, setViewYear] = useState(initDate.getFullYear());
+      const [viewMonth, setViewMonth] = useState(initDate.getMonth());
+      const ref = useRef(null);
+
+      // Reset view when opened
+      useEffect(() => {
+        if (open) {
+          const d = new Date(`${activeFrom}T12:00:00`);
+          setViewYear(d.getFullYear());
+          setViewMonth(d.getMonth());
+        }
+      }, [open, activeFrom]);
+
+      // Close on click outside
+      useEffect(() => {
+        if (!open) return;
+        const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
+        document.addEventListener('mousedown', handler);
+        return () => document.removeEventListener('mousedown', handler);
+      }, [open, onClose]);
+
+      // Close on Escape
+      useEffect(() => {
+        if (!open) return;
+        const handler = (e) => { if (e.key === 'Escape') onClose(); };
+        document.addEventListener('keydown', handler);
+        return () => document.removeEventListener('keydown', handler);
+      }, [open, onClose]);
+
+      if (!open) return null;
+
+      const prevMonth = () => {
+        if (viewMonth === 0) { setViewMonth(11); setViewYear(viewYear - 1); }
+        else setViewMonth(viewMonth - 1);
+      };
+      const nextMonth = () => {
+        if (viewMonth === 11) { setViewMonth(0); setViewYear(viewYear + 1); }
+        else setViewMonth(viewMonth + 1);
+      };
+
+      // Build calendar grid
+      const firstDay = new Date(viewYear, viewMonth, 1);
+      const lastDay = new Date(viewYear, viewMonth + 1, 0);
+      const startDow = (firstDay.getDay() + 6) % 7; // Monday=0
+      const daysInMonth = lastDay.getDate();
+
+      const cells = [];
+      // Leading empty cells
+      for (let i = 0; i < startDow; i++) cells.push(null);
+      // Day cells
+      for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+      return (
+        <div ref={ref} className="absolute top-full left-1/2 -translate-x-1/2 mt-2 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl shadow-xl z-50 p-3 w-[260px] fade-in select-none">
+          <div className="flex items-center justify-between mb-2">
+            <button onClick={prevMonth} className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-slate-100 dark:hover:bg-gray-800 transition text-slate-500"><ChevronLeft /></button>
+            <span className="text-sm font-semibold text-slate-700 dark:text-slate-300">{MONTHS[viewMonth]} {viewYear}</span>
+            <button onClick={nextMonth} className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-slate-100 dark:hover:bg-gray-800 transition text-slate-500"><ChevronRight /></button>
+          </div>
+          <div className="grid grid-cols-7 gap-0.5 text-center">
+            {DAY_LABELS.map(l => (
+              <div key={l} className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 py-1">{l}</div>
+            ))}
+            {cells.map((day, i) => {
+              if (day === null) return <div key={`e${i}`}></div>;
+              const dateStr = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+              const isToday = dateStr === today;
+              const inRange = dateStr >= activeFrom && dateStr <= activeTo;
+              const isWeekend = (i % 7) >= 5;
+              return (
+                <button key={day} onClick={() => { onSelectDate(dateStr); onClose(); }}
+                  className={`w-8 h-8 mx-auto text-xs font-medium rounded-lg transition-all
+                    ${inRange ? 'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 font-bold' : ''}
+                    ${isToday && !inRange ? 'ring-2 ring-indigo-500 ring-inset text-indigo-600 dark:text-indigo-400 font-bold' : ''}
+                    ${!inRange && !isToday ? (isWeekend ? 'text-slate-300 dark:text-slate-600' : 'text-slate-600 dark:text-slate-400') : ''}
+                    hover:bg-indigo-50 dark:hover:bg-indigo-950/30`}>{day}</button>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    // =========================================================================
     // Header
     // =========================================================================
-    function Header({ isDark, toggleDark, onNavigate, onGoToday, onSetView, onTogglePrefs }) {
+    function Header({ isDark, toggleDark, onNavigate, onGoToday, onGoToDate, onSetView, onTogglePrefs }) {
       const { state } = useAppState();
       const isMonth = state.viewMode === 'month';
       const draftCount = totalDraftCount(state.drafts);
+      const [pickerOpen, setPickerOpen] = useState(false);
       return (
         <header className="mb-3 flex-shrink-0">
           <div className="flex items-center justify-between flex-wrap gap-4">
             <div className="flex items-center gap-1.5">
               <button onClick={() => onNavigate(isMonth ? '-1m' : -7)} className="w-9 h-9 flex items-center justify-center rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-slate-50 dark:hover:bg-gray-800 transition text-slate-500 dark:text-slate-400"><ChevronLeft /></button>
-              <div className="min-w-[220px] text-center">
-                <h1 className="text-lg font-bold tracking-tight">{rangeLabel(state.from, state.to)}</h1>
+              <div className="min-w-[220px] text-center relative">
+                <h1 className="text-lg font-bold tracking-tight cursor-pointer hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors" onClick={() => setPickerOpen(!pickerOpen)}>{rangeLabel(state.from, state.to)}</h1>
+                <DatePicker open={pickerOpen} onClose={() => setPickerOpen(false)} onSelectDate={onGoToDate} activeFrom={state.from} activeTo={state.to} />
               </div>
               <button onClick={() => onNavigate(isMonth ? '1m' : 7)} className="w-9 h-9 flex items-center justify-center rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-slate-50 dark:hover:bg-gray-800 transition text-slate-500 dark:text-slate-400"><ChevronRight /></button>
             </div>
@@ -604,8 +707,8 @@
       }, [state.from, state.to, state.targetSecondsPerDay, instructions]);
 
       return (
-        <div className="mb-3 flex-shrink-0 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-800 rounded-xl shadow-grid overflow-hidden fade-in">
-          <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 dark:border-gray-800 bg-slate-50/50 dark:bg-gray-900/50">
+        <div className="mb-3 flex-shrink min-h-0 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-800 rounded-xl shadow-grid overflow-hidden fade-in">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 dark:border-gray-800 bg-slate-50/50 dark:bg-gray-900/50 flex-shrink-0">
             <div className="flex items-center gap-2"><SparkleIcon /><span className="text-sm font-semibold text-slate-700 dark:text-slate-300">AI Assistant</span></div>
             <div className="flex items-center gap-2">
               <select id="suggest-scope" className="text-xs font-medium border border-slate-200 dark:border-gray-700 rounded-lg px-2.5 py-1.5 bg-white dark:bg-gray-800 text-slate-600 dark:text-slate-400 focus:ring-2 focus:ring-sky-500 outline-none cursor-pointer">
@@ -887,12 +990,12 @@
       const { state, dispatch } = useAppState();
       if (!state.prefsOpen) return null;
       return (
-        <div className="mb-3 flex-shrink-0 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-800 rounded-xl shadow-grid overflow-hidden fade-in">
-          <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 dark:border-gray-800 bg-slate-50/50 dark:bg-gray-900/50">
+        <div className="mb-3 flex-shrink min-h-0 bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-800 rounded-xl shadow-grid overflow-hidden fade-in flex flex-col">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 dark:border-gray-800 bg-slate-50/50 dark:bg-gray-900/50 flex-shrink-0">
             <div className="flex items-center gap-2"><SettingsIcon /><span className="text-sm font-semibold text-slate-700 dark:text-slate-300">Settings</span></div>
             <button onClick={() => dispatch({ type: 'SET_PREFS_OPEN', open: false })} className="text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition">Close</button>
           </div>
-          <div className="max-h-[300px] overflow-y-auto">
+          <div className="overflow-y-auto flex-1 min-h-0">
             <ScanDirsSection />
             <GoogleSection />
             <LearnedDescriptions />
@@ -940,11 +1043,19 @@
       );
     }
 
-    const DataCell = memo(function DataCell({ issueKey, date, cell, compact, colW, todayBg, isFocused, rowIdx, colIdx, isLoading, onEdit, onAcceptSuggestion, onRejectSuggestion, onPushDraft, onRemoveDraft, onUndoWorklog, onDeleteWorklog }) {
+    const DataCell = memo(function DataCell({ issueKey, date, cell, compact, colW, todayBg, isFocused, rowIdx, colIdx, isLoading, isFillHighlighted, onEdit, onAcceptSuggestion, onRejectSuggestion, onPushDraft, onRemoveDraft, onUndoWorklog, onDeleteWorklog, onFillStart, onCellDrop, onDragCellStart }) {
+      const dragEnter = useCallback(e => { e.preventDefault(); e.currentTarget.classList.add('drag-over'); }, []);
+      const dragLeave = useCallback(e => { e.currentTarget.classList.remove('drag-over'); }, []);
+      const dragOver = useCallback(e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }, []);
+      const drop = useCallback(e => { e.preventDefault(); e.currentTarget.classList.remove('drag-over'); onCellDrop(issueKey, date); }, [issueKey, date, onCellDrop]);
+      const dragStart = useCallback(e => { e.dataTransfer.effectAllowed = 'copy'; e.dataTransfer.setData('text/plain', `${issueKey}:${date}`); e.currentTarget.classList.add('drag-source'); onDragCellStart(issueKey, date, cell); }, [issueKey, date, cell, onDragCellStart]);
+      const dragEnd = useCallback(e => { e.currentTarget.classList.remove('drag-source'); }, []);
+
       if (!cell) {
         return (
-          <td className={`px-1 py-2 text-center border-b border-slate-100 dark:border-gray-800/60 ${colW} ${todayBg} ${isFocused ? 'ring-2 ring-indigo-500 ring-inset z-[6]' : ''} cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-950/20 transition-colors`}
-            data-fc={`${rowIdx}-${colIdx}`} onClick={() => onEdit(issueKey, date)}></td>
+          <td className={`px-1 py-2 text-center border-b border-slate-100 dark:border-gray-800/60 ${colW} ${todayBg} ${isFocused ? 'ring-2 ring-indigo-500 ring-inset z-[6]' : ''} ${isFillHighlighted ? 'fill-highlight' : ''} cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-950/20 transition-colors`}
+            data-fc={`${rowIdx}-${colIdx}`} onClick={() => onEdit(issueKey, date)}
+            onDragEnter={dragEnter} onDragLeave={dragLeave} onDragOver={dragOver} onDrop={drop}></td>
         );
       }
 
@@ -966,8 +1077,11 @@
       }
 
       return (
-        <td className={`px-1 py-1.5 text-center border-b border-slate-100 dark:border-gray-800/60 ${colW} ${bg} ${isFocused ? 'ring-2 ring-indigo-500 ring-inset z-[6]' : ''} cursor-pointer hover:bg-indigo-50/60 dark:hover:bg-indigo-950/20 transition-colors relative`}
-          data-fc={`${rowIdx}-${colIdx}`} onClick={() => onEdit(issueKey, date)} data-tip={tipText || undefined}>
+        <td className={`px-1 py-1.5 text-center border-b border-slate-100 dark:border-gray-800/60 ${colW} ${bg} ${isFocused ? 'ring-2 ring-indigo-500 ring-inset z-[6]' : ''} ${isFillHighlighted ? 'fill-highlight' : ''} cursor-pointer hover:bg-indigo-50/60 dark:hover:bg-indigo-950/20 transition-colors relative`}
+          data-fc={`${rowIdx}-${colIdx}`} onClick={() => onEdit(issueKey, date)} data-tip={tipText || undefined}
+          draggable onDragStart={dragStart} onDragEnd={dragEnd}
+          onDragEnter={dragEnter} onDragLeave={dragLeave} onDragOver={dragOver} onDrop={drop}>
+          <div className="fill-handle" onMouseDown={e => { e.stopPropagation(); e.preventDefault(); onFillStart(issueKey, date, cell); }}></div>
           {isSug && (
             <div className="flex gap-1 justify-center mt-1">
               <button onClick={e => { e.stopPropagation(); onAcceptSuggestion(issueKey, date); }} className="w-5 h-5 flex items-center justify-center rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-200 dark:hover:bg-emerald-800/60 transition text-[10px] font-bold" title="Accept as draft">{'\u2713'}</button>
@@ -995,13 +1109,86 @@
     });
 
     function TimesheetGrid({ grid, dates, issueKeys, actions }) {
-      const { state } = useAppState();
+      const { state, dispatch } = useAppState();
       const wdSet = new Set(state.workingDays);
       const target = state.targetSecondsPerDay;
       const isMonth = state.viewMode === 'month';
       const today = todayStr();
       const colW = isMonth ? 'w-[52px] min-w-[52px]' : 'w-[100px] min-w-[100px]';
       const hBase = 'px-2 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 bg-slate-50 dark:bg-gray-900 border-b border-slate-200 dark:border-gray-800 sticky top-0 z-10 select-none';
+
+      // --- Drag source tracking (via ref to avoid stale closures) ---
+      const dragSourceRef = useRef(null);
+
+      // --- Fill handle (Excel-style drag-to-fill) ---
+      const fillRef = useRef(null);
+
+      const handleFillStart = useCallback((issueKey, date, cell) => {
+        fillRef.current = { issueKey, sourceDate: date, sourceCell: cell, highlightedDates: [] };
+        dispatch({ type: 'SET_FILL_STATE', fillState: { issueKey, sourceDate: date, highlightedDates: [] } });
+
+        const onMouseMove = (e) => {
+          const el = document.elementFromPoint(e.clientX, e.clientY);
+          const td = el?.closest('td[data-fc]');
+          if (!td) return;
+          const [rowStr, colStr] = td.dataset.fc.split('-');
+          const rowIdx = parseInt(rowStr);
+          const colIdx = parseInt(colStr);
+          if (issueKeys[rowIdx] !== fillRef.current.issueKey) return;
+          const srcCol = dates.indexOf(fillRef.current.sourceDate);
+          const minCol = Math.min(srcCol, colIdx);
+          const maxCol = Math.max(srcCol, colIdx);
+          const highlighted = [];
+          for (let i = minCol; i <= maxCol; i++) {
+            if (dates[i] !== fillRef.current.sourceDate) highlighted.push(dates[i]);
+          }
+          if (highlighted.join() !== fillRef.current.highlightedDates.join()) {
+            fillRef.current.highlightedDates = highlighted;
+            dispatch({ type: 'SET_FILL_STATE', fillState: { issueKey, sourceDate: date, highlightedDates: highlighted } });
+          }
+        };
+
+        const onMouseUp = () => {
+          document.removeEventListener('mousemove', onMouseMove);
+          document.removeEventListener('mouseup', onMouseUp);
+          const { highlightedDates, sourceCell, issueKey: ik } = fillRef.current;
+          if (highlightedDates.length > 0) {
+            const newDrafts = {};
+            for (const d of highlightedDates) {
+              newDrafts[`${ik}:${d}`] = sourceCell.entries.map(entry => ({
+                issueKey: ik, date: d,
+                seconds: entry.seconds ?? entry.timeSpentSeconds ?? 0,
+                description: entry.description ?? '',
+              }));
+            }
+            dispatch({ type: 'SET_DRAFTS_BATCH', drafts: newDrafts });
+            dispatch({ type: 'ADD_TOAST', message: `Filled ${highlightedDates.length} day(s) with ${fmtDur(sourceCell.seconds)}`, toastType: 'success' });
+          }
+          fillRef.current = null;
+          dispatch({ type: 'SET_FILL_STATE', fillState: null });
+        };
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+      }, [dates, issueKeys, dispatch]);
+
+      // --- HTML5 drag-and-drop (cell to cell) ---
+      const handleDragStart = useCallback((issueKey, date, cell) => {
+        dragSourceRef.current = { issueKey, date, cell };
+      }, []);
+
+      const handleCellDrop = useCallback((targetKey, targetDate) => {
+        const src = dragSourceRef.current;
+        if (!src || (src.issueKey === targetKey && src.date === targetDate)) { dragSourceRef.current = null; return; }
+        const entries = src.cell.entries.map(entry => ({
+          issueKey: targetKey, date: targetDate,
+          seconds: entry.seconds ?? entry.timeSpentSeconds ?? 0,
+          description: entry.description ?? '',
+        }));
+        dispatch({ type: 'SET_DRAFT', key: `${targetKey}:${targetDate}`, entries });
+        dispatch({ type: 'ADD_TOAST', message: `Copied to ${targetKey} ${targetDate}`, toastType: 'success' });
+        dragSourceRef.current = null;
+      }, [dispatch]);
 
       return (
         <table className="w-full border-collapse min-w-[700px]">
@@ -1011,10 +1198,19 @@
               {dates.map(d => {
                 const wd = wdSet.has(d);
                 const isToday = d === today;
+                // Compute day status for header color hint
+                let dayLoggedSec = 0;
+                for (const key of issueKeys) { const c = grid[key]?.[d]; if (c && c.source === 'existing') dayLoggedSec += c.seconds; }
+                const dayFull = wd && dayLoggedSec >= target;
+                const dayPartial = wd && dayLoggedSec > 0 && dayLoggedSec < target;
+                let headerBg = '';
+                if (isToday) headerBg = 'bg-indigo-50 dark:bg-indigo-950/30';
+                else if (dayFull) headerBg = 'bg-emerald-50/60 dark:bg-emerald-950/15';
+                else if (dayPartial) headerBg = 'bg-amber-50/60 dark:bg-amber-950/15';
                 return (
-                  <th key={d} className={`${hBase} ${colW} text-center ${!wd ? 'opacity-40' : ''} ${isToday ? 'bg-indigo-50 dark:bg-indigo-950/30' : ''}`}>
-                    {isMonth ? (<><div className="leading-tight">{dayLabel(d)}</div><div className={`text-sm font-bold ${isToday ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-600 dark:text-slate-300'}`}>{shortDate(d)}</div></>) : (
-                      <div className={isToday ? 'text-indigo-600 dark:text-indigo-400 font-bold' : ''}>{fullDate(d)}</div>
+                  <th key={d} className={`${hBase} ${colW} text-center ${!wd ? 'opacity-40' : ''} ${headerBg}`}>
+                    {isMonth ? (<><div className="leading-tight">{dayLabel(d)}</div><div className={`text-sm font-bold ${isToday ? 'text-indigo-600 dark:text-indigo-400' : dayFull ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-600 dark:text-slate-300'}`}>{shortDate(d)}</div></>) : (
+                      <div className={isToday ? 'text-indigo-600 dark:text-indigo-400 font-bold' : dayFull ? 'text-emerald-600 dark:text-emerald-400' : ''}>{fullDate(d)}</div>
                     )}
                   </th>
                 );
@@ -1044,9 +1240,13 @@
 
                     if (isEditing) return <EditCell key={d} issueKey={key} date={d} cell={cell} colW={colW} />;
 
+                    const isFillHighlighted = state.fillState?.issueKey === key && state.fillState?.highlightedDates?.includes(d);
+
                     return <DataCell key={d} issueKey={key} date={d} cell={cell} compact={isMonth} colW={colW} todayBg={todayBg} isFocused={isFocused} rowIdx={rowIdx} colIdx={ci} isLoading={isLoading}
+                      isFillHighlighted={isFillHighlighted}
                       onEdit={actions.startEdit} onAcceptSuggestion={actions.acceptSuggestion} onRejectSuggestion={actions.rejectSuggestion}
-                      onPushDraft={actions.pushSingleDraft} onRemoveDraft={actions.removeDraft} onUndoWorklog={actions.undoWorklog} onDeleteWorklog={actions.deleteWorklog} />;
+                      onPushDraft={actions.pushSingleDraft} onRemoveDraft={actions.removeDraft} onUndoWorklog={actions.undoWorklog} onDeleteWorklog={actions.deleteWorklog}
+                      onFillStart={handleFillStart} onCellDrop={handleCellDrop} onDragCellStart={handleDragStart} />;
                   })}
                   <td className="px-2 py-2 text-center text-xs font-bold border-b border-slate-100 dark:border-gray-800/60 bg-slate-50/60 dark:bg-gray-800/40 text-slate-700 dark:text-slate-300">{fmtDur(rowTotal)}</td>
                 </tr>
@@ -1056,22 +1256,57 @@
             <tr>
               <td className="px-3 py-2.5 text-left text-xs font-bold text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-gray-800/60 border-t-2 border-slate-200 dark:border-gray-700 sticky left-0 z-[5]">Day Total</td>
               {dates.map(d => {
-                let dayTotal = 0, daySuggestions = 0, dayDrafts = 0;
+                let dayTotal = 0, daySubmitted = 0, dayDraftSec = 0, daySugSec = 0, daySuggestions = 0, dayDrafts = 0;
                 for (const key of issueKeys) {
                   const c = grid[key]?.[d];
-                  if (c) { dayTotal += c.seconds; if (c.source === 'suggestion') daySuggestions++; else if (c.source === 'draft') dayDrafts++; }
+                  if (c) {
+                    dayTotal += c.seconds;
+                    if (c.source === 'suggestion') { daySuggestions++; daySugSec += c.seconds; }
+                    else if (c.source === 'draft') { dayDrafts++; dayDraftSec += c.seconds; }
+                    else { daySubmitted += c.seconds; }
+                  }
                 }
                 const wd = wdSet.has(d);
-                let cls = 'text-slate-300 dark:text-slate-700';
-                if (wd) {
-                  if (dayTotal >= target) cls = 'text-emerald-600 dark:text-emerald-400';
-                  else if (dayTotal > 0) cls = 'text-amber-600 dark:text-amber-400';
-                  else cls = 'text-slate-400 dark:text-slate-600';
-                }
+                const pct = wd ? Math.min(100, Math.round((dayTotal / target) * 100)) : 0;
+                const submittedPct = wd ? Math.min(100, Math.round((daySubmitted / target) * 100)) : 0;
+                const draftPct = wd ? Math.min(100 - submittedPct, Math.round((dayDraftSec / target) * 100)) : 0;
+                const remaining = wd ? Math.max(0, target - dayTotal) : 0;
+                const isFull = dayTotal >= target;
+                const isOver = dayTotal > target;
                 const isToday = d === today;
+
+                let textCls = 'text-slate-300 dark:text-slate-700';
+                let barColor = 'bg-slate-200 dark:bg-slate-700';
+                if (wd) {
+                  if (isFull) { textCls = 'text-emerald-600 dark:text-emerald-400'; barColor = 'bg-emerald-500'; }
+                  else if (dayTotal > 0) { textCls = 'text-amber-600 dark:text-amber-400'; barColor = 'bg-amber-400'; }
+                  else { textCls = 'text-slate-400 dark:text-slate-600'; }
+                }
+
                 return (
-                  <td key={d} className={`px-1 py-2 text-center text-xs font-bold bg-slate-50 dark:bg-gray-800/60 border-t-2 border-slate-200 dark:border-gray-700 ${cls} ${isToday ? 'bg-indigo-50 dark:bg-indigo-950/20' : ''}`}>
-                    {fmtDur(dayTotal) || <span className="text-slate-300 dark:text-slate-700">{'\u2013'}</span>}
+                  <td key={d} className={`px-1 py-2 text-center text-xs font-bold border-t-2 border-slate-200 dark:border-gray-700 ${isToday ? 'bg-indigo-50/80 dark:bg-indigo-950/20' : 'bg-slate-50 dark:bg-gray-800/60'}`}>
+                    <div className={`font-bold tabular-nums ${textCls}`}>
+                      {fmtDur(dayTotal) || <span className="text-slate-300 dark:text-slate-700">{'\u2013'}</span>}
+                    </div>
+                    {wd && (
+                      <>
+                        <div className="mt-1 mx-1 h-1.5 rounded-full bg-slate-200 dark:bg-gray-700 overflow-hidden" title={`${fmtDur(daySubmitted)} submitted${dayDraftSec ? ', ' + fmtDur(dayDraftSec) + ' drafted' : ''}${daySugSec ? ', ' + fmtDur(daySugSec) + ' suggested' : ''}`}>
+                          <div className="h-full flex">
+                            {submittedPct > 0 && <div className={`${isFull && !dayDraftSec && !daySugSec ? 'bg-emerald-500' : 'bg-emerald-400 dark:bg-emerald-500'} transition-all duration-300`} style={{width: submittedPct + '%'}}></div>}
+                            {draftPct > 0 && <div className="bg-amber-400 dark:bg-amber-500 transition-all duration-300" style={{width: draftPct + '%'}}></div>}
+                          </div>
+                        </div>
+                        {!isFull && dayTotal > 0 && (
+                          <div className="text-[9px] mt-0.5 text-slate-400 dark:text-slate-500 tabular-nums">{fmtDur(remaining)} left</div>
+                        )}
+                        {isFull && isOver && (
+                          <div className="text-[9px] mt-0.5 text-emerald-500 dark:text-emerald-400 tabular-nums">+{fmtDur(dayTotal - target)}</div>
+                        )}
+                        {isFull && !isOver && (
+                          <div className="text-[9px] mt-0.5 text-emerald-500 dark:text-emerald-400">{'\u2713'}</div>
+                        )}
+                      </>
+                    )}
                     {(daySuggestions > 0 || dayDrafts > 0) && (
                       <div className="flex items-center justify-center gap-1 mt-1">
                         {daySuggestions > 0 && <button onClick={() => actions.acceptDaySuggestions(d)} className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-400 hover:bg-sky-200 dark:hover:bg-sky-800/60 transition" title={`Accept ${daySuggestions} suggestion(s) as drafts`}>{'\u2713'} {daySuggestions}</button>}
@@ -1118,6 +1353,27 @@
       // Reset query when closed
       useEffect(() => { if (!open) { setQuery(''); setSearchResults([]); } }, [open]);
 
+      // Allow Enter to add exact key directly (e.g. "INT-7" Enter)
+      const handleKeyDown = (e) => {
+        if (e.key === 'Escape') { onClose(); return; }
+        if (e.key === 'Enter') {
+          const q = query.trim().toUpperCase();
+          // If it looks like an exact issue key, add it directly
+          if (/^[A-Z][A-Z0-9]+-\d+$/.test(q)) {
+            dispatch({ type: 'ADD_EXTRA_ISSUE', key: q });
+            onClose();
+            return;
+          }
+          // If there's exactly one search result, select it
+          const existingKeys = new Set(gridIssueKeys || []);
+          const filtered = searchResults.filter(i => !existingKeys.has(i.key));
+          if (filtered.length === 1) {
+            dispatch({ type: 'ADD_EXTRA_ISSUE', key: filtered[0].key });
+            onClose();
+          }
+        }
+      };
+
       // Fetch initial issues when opened
       useEffect(() => {
         if (!open) return;
@@ -1143,14 +1399,18 @@
       // Search when query changes
       useEffect(() => {
         if (!debouncedQuery || debouncedQuery.length < 2) { setSearchResults([]); setSearchLoading(false); return; }
+        let cancelled = false;
         setSearchLoading(true);
         (async () => {
           try {
             const data = await apiCall(`/api/issues?q=${encodeURIComponent(debouncedQuery)}`);
-            setSearchResults(data.issues.map(i => ({ ...i, status: '' })));
-          } catch {}
-          setSearchLoading(false);
+            if (!cancelled) setSearchResults((data.issues || []).map(i => ({ ...i, status: '' })));
+          } catch {
+            if (!cancelled) setSearchResults([]);
+          }
+          if (!cancelled) setSearchLoading(false);
         })();
+        return () => { cancelled = true; };
       }, [debouncedQuery]);
 
       const addIssue = (key) => {
@@ -1183,31 +1443,64 @@
       if (!open) return null;
 
       const filteredSearch = isSearching ? searchResults.filter(i => !existingKeys.has(i.key)) : [];
+
+      // Client-side filter of initial results while typing (instant feedback before server responds)
+      const localFilter = (items) => {
+        if (!query || query.length < 1) return items;
+        const q = query.toLowerCase();
+        return items.filter(i =>
+          !existingKeys.has(i.key) && (
+            i.key.toLowerCase().includes(q) ||
+            (i.summary && i.summary.toLowerCase().includes(q))
+          )
+        );
+      };
+      const localSprint = localFilter(initial.sprint);
+      const localRecent = localFilter(initial.recent);
+      const hasLocalMatches = localSprint.length > 0 || localRecent.length > 0;
+
+      // Merge: show server results first, then local matches that aren't in server results
+      const serverKeys = new Set(filteredSearch.map(i => i.key));
+      const extraLocal = isSearching ? [...localSprint, ...localRecent].filter(i => !serverKeys.has(i.key) && !existingKeys.has(i.key)) : [];
+
       const hasInitial = initial.sprint.length > 0 || initial.recent.length > 0;
-      const showDropdown = isSearching || hasInitial || initialLoading;
+      const showDropdown = isSearching || hasInitial || hasLocalMatches || initialLoading;
 
       return (
         <div className="flex items-center gap-2 fade-in flex-shrink-0">
           <div className="relative">
             <div className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"><SearchIcon /></div>
-            <input ref={inputRef} value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === 'Escape' && onClose()}
-              className="text-sm border border-slate-200 dark:border-gray-700 rounded-lg pl-9 pr-3 py-2 w-80 bg-white dark:bg-gray-900 focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm" placeholder="Search by key or keyword..." />
+            <input ref={inputRef} value={query} onChange={e => setQuery(e.target.value)} onKeyDown={handleKeyDown}
+              className="text-sm border border-slate-200 dark:border-gray-700 rounded-lg pl-9 pr-3 py-2 w-80 bg-white dark:bg-gray-900 focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm" placeholder="Search by key (INT-7) or keyword..." />
             {showDropdown && (
-              <div className="absolute top-full left-0 w-full bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-lg mt-1.5 max-h-72 overflow-y-auto shadow-xl z-50">
+              <div className="absolute bottom-full left-0 w-full bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-lg mb-1.5 max-h-72 overflow-y-auto shadow-xl z-50">
                 {(initialLoading || searchLoading) && (
-                  <div className="px-4 py-3 text-sm text-slate-400 dark:text-slate-500 flex items-center gap-2">
+                  <div className="px-4 py-2 text-sm text-slate-400 dark:text-slate-500 flex items-center gap-2">
                     <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
-                    Loading...
+                    Searching...
                   </div>
                 )}
-                {isSearching && !searchLoading && filteredSearch.length > 0 && filteredSearch.map(renderItem)}
-                {isSearching && !searchLoading && filteredSearch.length === 0 && (
-                  <div className="px-4 py-3 text-sm text-slate-400 dark:text-slate-500">No results found</div>
+                {isSearching && !searchLoading && filteredSearch.length > 0 && (
+                  <>
+                    <div className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 bg-slate-50 dark:bg-gray-950/50 sticky top-0">Search Results</div>
+                    {filteredSearch.map(renderItem)}
+                  </>
+                )}
+                {isSearching && extraLocal.length > 0 && (
+                  <>
+                    <div className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 bg-slate-50 dark:bg-gray-950/50 sticky top-0">Local Matches</div>
+                    {extraLocal.map(renderItem)}
+                  </>
+                )}
+                {isSearching && !searchLoading && filteredSearch.length === 0 && extraLocal.length === 0 && (
+                  <div className="px-4 py-3 text-sm text-slate-400 dark:text-slate-500">
+                    No results found.{/^[A-Z][A-Z0-9]+-\d+$/i.test(query.trim()) && <span> Press <kbd className="px-1 py-0.5 rounded bg-slate-100 dark:bg-gray-800 text-[10px] font-mono">Enter</kbd> to add <b>{query.trim().toUpperCase()}</b> directly.</span>}
+                  </div>
                 )}
                 {!isSearching && !initialLoading && (
                   <>
-                    {renderSection('Sprint Issues', initial.sprint)}
-                    {renderSection('Recently Worked', initial.recent)}
+                    {renderSection('Sprint Issues', localSprint.length > 0 ? localSprint : initial.sprint)}
+                    {renderSection('Recently Worked', localRecent.length > 0 ? localRecent : initial.recent)}
                     {!hasInitial && initial.loaded && (
                       <div className="px-4 py-3 text-sm text-slate-400 dark:text-slate-500">No assigned issues found. Try searching above.</div>
                     )}
@@ -1352,6 +1645,104 @@
     // =========================================================================
     // Footer
     // =========================================================================
+    // =========================================================================
+    // Summary Bar
+    // =========================================================================
+    function SummaryBar() {
+      const { state } = useAppState();
+      const wdSet = new Set(state.workingDays);
+      const target = state.targetSecondsPerDay;
+      const isMonth = state.viewMode === 'month';
+
+      // Compute stats for a date range
+      const computeStats = (from, to) => {
+        let submitted = 0, drafted = 0, workingDays = 0;
+        for (const d of state.workingDays) {
+          if (d < from || d > to) continue;
+          workingDays++;
+        }
+        for (const wl of state.worklogs) {
+          if (wl.startDate >= from && wl.startDate <= to) submitted += wl.timeSpentSeconds;
+        }
+        for (const [key, entries] of Object.entries(state.drafts)) {
+          for (const e of entries) {
+            if (e.date >= from && e.date <= to) drafted += e.seconds;
+          }
+        }
+        const targetTotal = workingDays * target;
+        return { submitted, drafted, targetTotal, workingDays };
+      };
+
+      // Compute stats only over the loaded data range (state.from → state.to)
+      // In week view: "Week" = full range, "Month" not shown (data not loaded)
+      // In month view: "Month" = full range, "Week" = current week intersected with loaded range
+      const periodStats = computeStats(state.from, state.to);
+      const periodLabel = isMonth ? 'Month' : 'Week';
+
+      // Secondary stat: only show if the data range covers it
+      let secondaryStats = null;
+      let secondaryLabel = '';
+      if (isMonth) {
+        // In month view, also show the current week within the month
+        const week = getWeekRange(todayStr());
+        // Intersect with loaded range
+        const wFrom = week.from < state.from ? state.from : week.from;
+        const wTo = week.to > state.to ? state.to : week.to;
+        if (wFrom <= wTo) {
+          secondaryStats = computeStats(wFrom, wTo);
+          secondaryLabel = 'This Week';
+        }
+      } else {
+        // In week view, show today's stats
+        const today = todayStr();
+        if (today >= state.from && today <= state.to) {
+          secondaryStats = computeStats(today, today);
+          secondaryLabel = 'Today';
+        }
+      }
+
+      const renderStat = (label, stats) => {
+        const total = stats.submitted + stats.drafted;
+        const diff = total - stats.targetTotal;
+        const pct = stats.targetTotal > 0 ? Math.min(100, Math.round((stats.submitted / stats.targetTotal) * 100)) : 0;
+        const draftPct = stats.targetTotal > 0 ? Math.min(100 - pct, Math.round((stats.drafted / stats.targetTotal) * 100)) : 0;
+        const isFull = total >= stats.targetTotal && stats.targetTotal > 0;
+
+        return (
+          <div className="flex items-center gap-3">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 w-12">{label}</span>
+            <div className="w-24 h-1.5 rounded-full bg-slate-200 dark:bg-gray-700 overflow-hidden flex-shrink-0">
+              <div className="h-full flex">
+                {pct > 0 && <div className="bg-emerald-500 transition-all duration-300" style={{width: pct + '%'}}></div>}
+                {draftPct > 0 && <div className="bg-amber-400 transition-all duration-300" style={{width: draftPct + '%'}}></div>}
+              </div>
+            </div>
+            <span className="text-xs font-bold tabular-nums text-slate-700 dark:text-slate-300">{fmtDur(stats.submitted)}</span>
+            {stats.drafted > 0 && <span className="text-xs tabular-nums text-amber-500">+{fmtDur(stats.drafted)} draft</span>}
+            <span className="text-[10px] text-slate-400 dark:text-slate-500 tabular-nums">/ {fmtDur(stats.targetTotal)}</span>
+            {stats.targetTotal > 0 && (
+              <span className={`text-[10px] font-semibold tabular-nums ${isFull ? 'text-emerald-500' : diff < 0 ? 'text-amber-500' : 'text-slate-400'}`}>
+                {isFull ? (diff > 0 ? `+${fmtDur(diff)}` : '\u2713') : `${fmtDur(Math.abs(diff))} left`}
+              </span>
+            )}
+            <span className="text-[10px] text-slate-300 dark:text-slate-600 tabular-nums">({stats.workingDays}d)</span>
+          </div>
+        );
+      };
+
+      return (
+        <div className="mt-2 flex-shrink-0 flex items-center gap-6 px-1 py-1.5">
+          {renderStat(periodLabel, periodStats)}
+          {secondaryStats && secondaryStats.workingDays > 0 && (
+            <>
+              <div className="w-px h-4 bg-slate-200 dark:bg-gray-700"></div>
+              {renderStat(secondaryLabel, secondaryStats)}
+            </>
+          )}
+        </div>
+      );
+    }
+
     function Footer({ onShowSearch, onCopyPrevWeek, onSubmitAll, onSubmitWeek, onSubmitMonth, onDiscardAll, onUndoWeek, onUndoMonth, onSubmitDay }) {
       const { state } = useAppState();
       const draftCount = totalDraftCount(state.drafts);
@@ -1458,6 +1849,23 @@
           to = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
         } else {
           const mon = new Date(now); mon.setDate(now.getDate() - (dow === 0 ? 6 : dow - 1));
+          const fri = new Date(mon); fri.setDate(mon.getDate() + 4);
+          from = mon.toISOString().slice(0, 10); to = fri.toISOString().slice(0, 10);
+        }
+        dispatch({ type: 'SET_DATE_RANGE', from, to });
+        fetchData(from, to);
+      }, [fetchData]);
+
+      const goToDate = useCallback((dateStr) => {
+        const s = stateRef.current;
+        let from, to;
+        if (s.viewMode === 'month') {
+          const d = new Date(`${dateStr}T12:00:00`);
+          from = new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
+          to = new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().slice(0, 10);
+        } else {
+          const d = new Date(`${dateStr}T12:00:00`), dow = d.getDay();
+          const mon = new Date(d); mon.setDate(d.getDate() - (dow === 0 ? 6 : dow - 1));
           const fri = new Date(mon); fri.setDate(mon.getDate() + 4);
           from = mon.toISOString().slice(0, 10); to = fri.toISOString().slice(0, 10);
         }
@@ -1773,7 +2181,7 @@
       return (
         <AppContext.Provider value={{ state, dispatch }}>
           <div className="max-w-[1440px] mx-auto px-5 py-4 h-full flex flex-col">
-            <Header isDark={isDark} toggleDark={toggleDark} onNavigate={navigate} onGoToday={goToday} onSetView={setView} onTogglePrefs={togglePrefs} />
+            <Header isDark={isDark} toggleDark={toggleDark} onNavigate={navigate} onGoToday={goToday} onGoToDate={goToDate} onSetView={setView} onTogglePrefs={togglePrefs} />
             <AIPanel onAcceptAll={acceptAllSuggestions} />
             <PrefsPanel />
             <div className="grid-scroll overflow-auto flex-1 min-h-0 rounded-xl border border-slate-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-grid fade-in relative">
@@ -1788,6 +2196,7 @@
                 </div>
               )}
             </div>
+            <SummaryBar />
             <Footer onShowSearch={() => setSearchOpen(true)} onCopyPrevWeek={copyPrevWeek}
               onSubmitAll={submitAll} onSubmitWeek={submitWeek} onSubmitMonth={submitMonth}
               onDiscardAll={discardAll} onUndoWeek={undoWeek} onUndoMonth={undoMonth} onSubmitDay={submitDayDrafts} />

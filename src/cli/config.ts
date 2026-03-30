@@ -1,9 +1,9 @@
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import { $ } from "bun";
 import { saveConfig, loadConfig, configExists, resolvePat } from "../lib/config.ts";
 import { getMyself } from "../lib/jira.ts";
 import { buildGoogleAuthUrl, exchangeGoogleCode, isGoogleConnected } from "../lib/google.ts";
+import { openInBrowser } from "../lib/browser.ts";
 import type { Config, TableWidths } from "../lib/types.ts";
 
 // ---------------------------------------------------------------------------
@@ -191,7 +191,7 @@ async function runGoogleSetup(config: Config): Promise<{ googleClientId: string;
   // Start OAuth flow
   const connect = await p.confirm({ message: "Connect Google Workspace now? (opens browser)" });
   if (p.isCancel(connect) || !connect) {
-    p.log.info("You can connect later via `jira tempo ui` → Settings → Connect.");
+    p.log.info("You can connect later via `jira tempo web` → Settings → Connect.");
     return result;
   }
 
@@ -224,10 +224,9 @@ async function runGoogleSetup(config: Config): Promise<{ googleClientId: string;
   const authUrl = buildGoogleAuthUrl(config, redirectUri);
 
   // Open browser
-  try { await $`xdg-open ${authUrl}`.quiet(); } catch {
-    try { await $`open ${authUrl}`.quiet(); } catch {
-      p.log.info(`Open this URL in your browser:\n${authUrl}`);
-    }
+  const opened = await openInBrowser(authUrl);
+  if (!opened) {
+    p.log.info(`Open this URL in your browser:\n${authUrl}`);
   }
 
   spinner.start("Waiting for Google authorization...");

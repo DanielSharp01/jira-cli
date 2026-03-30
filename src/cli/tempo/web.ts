@@ -1,13 +1,13 @@
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import { $ } from "bun";
 import { loadConfig } from "../../lib/config.ts";
 import { parseDateRange } from "../../lib/date-range.ts";
 import { parseDuration } from "../../lib/duration.ts";
-import { startServer } from "../../ui/server.ts";
-import { discoverGitRepos } from "../../lib/signals.ts";
+import { startServer } from "../../web/server.ts";
+import { discoverGitRepos } from "../../lib/evidence.ts";
+import { openInBrowser } from "../../lib/browser.ts";
 
-export async function tempoUI(
+export async function tempoWeb(
   fromArg?: string,
   toArg?: string,
   opts: {
@@ -66,19 +66,11 @@ export async function tempoUI(
   }
 
   const url = `http://localhost:${port}`;
-  console.log(`\n  ${pc.bold("Tempo UI")} running at ${pc.cyan(url)}`);
+  console.log(`\n  ${pc.bold("Tempo Web")} running at ${pc.cyan(url)}`);
   console.log(pc.dim("  Press Ctrl+C to stop\n"));
 
   if (opts.open !== false) {
-    try {
-      await $`xdg-open ${url}`.quiet();
-    } catch {
-      try {
-        await $`open ${url}`.quiet();
-      } catch {
-        // Can't auto-open, user will navigate manually
-      }
-    }
+    await openInBrowser(url);
   }
 
   // Keep process alive

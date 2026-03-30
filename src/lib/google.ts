@@ -114,7 +114,7 @@ async function getValidAccessToken(config: Config): Promise<string> {
   };
 
   if (!res.ok || !data.access_token) {
-    throw new Error(`Google token expired or revoked. Reconnect via UI Settings (jira tempo ui → gear icon → Connect).`);
+    throw new Error(`Google token expired or revoked. Reconnect via Settings (jira tempo web → gear icon → Connect).`);
   }
 
   const expiresAt = new Date(Date.now() + (data.expires_in ?? 3600) * 1000).toISOString();

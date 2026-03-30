@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { extractIssueKeys } from "../lib/signals.ts";
+import { extractIssueKeys } from "../lib/evidence.ts";
 
 describe("extractIssueKeys", () => {
   test("extracts single key from commit message", () => {

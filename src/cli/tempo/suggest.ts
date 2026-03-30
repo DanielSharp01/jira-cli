@@ -3,7 +3,7 @@ import pc from "picocolors";
 import { loadConfig } from "../../lib/config.ts";
 import { parseDateRange } from "../../lib/date-range.ts";
 import { parseDuration, formatDuration } from "../../lib/duration.ts";
-import { discoverGitRepos, gatherAllEvidence } from "../../lib/signals.ts";
+import { discoverGitRepos, gatherAllEvidence } from "../../lib/evidence.ts";
 import { generateSuggestions } from "../../lib/suggest.ts";
 import { getIssueIdsByKeys } from "../../lib/jira.ts";
 import { createWorklog, deleteWorklog, getWorklogsForRange } from "../../lib/tempo.ts";

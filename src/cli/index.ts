@@ -7,7 +7,8 @@ import { commentOnIssue } from "./issue/comment.ts";
 import { showTempo } from "./tempo/show.ts";
 import { logTempo } from "./tempo/log.ts";
 import { suggestTempo } from "./tempo/suggest.ts";
-import { tempoUI } from "./tempo/ui.ts";
+import { tempoWeb } from "./tempo/web.ts";
+import { showEvidence } from "./tempo/evidence.ts";
 import { runConfig, getConfig, setConfig } from "./config.ts";
 import { configureProjectWorkdir } from "./project/workdir.ts";
 import { projectPullIssues } from "./project/pull.ts";
@@ -244,7 +245,7 @@ export function buildProgram(): Command {
     .option("--repo <paths...>", "Additional git repos to scan")
     .option("--no-git", "Skip git scanning")
     .option("--hours <duration>", "Target hours per day (default: 8h)")
-    .option("--model <name>", "Override LLM model (default: gpt-5.4-mini)")
+    .option("--model <name>", "Override LLM model (e.g. gpt-5.4-mini, claude-sonnet-4-20250514)")
     .option("--dry-run", "Show suggestions without submitting")
     .action(
       async (
@@ -263,8 +264,8 @@ export function buildProgram(): Command {
     );
 
   tempo
-    .command("ui [from] [to]")
-    .description("Open a Tempo-like timesheet UI in the browser")
+    .command("web [from] [to]")
+    .description("Open a Tempo timesheet in the browser")
     .option("--port <number>", "Server port (default: random)", parseInt)
     .option("--repo <paths...>", "Additional git repos to scan for suggestions")
     .option("--hours <duration>", "Target hours per day (default: 8h)")
@@ -280,7 +281,31 @@ export function buildProgram(): Command {
           open?: boolean;
         } = {},
       ) => {
-        await tempoUI(from, to, opts);
+        await tempoWeb(from, to, opts);
+      },
+    );
+
+  tempo
+    .command("evidence [from] [to]")
+    .description("Show gathered work evidence (git, Jira, calendar)")
+    .option("--repo <paths...>", "Additional git repos to scan")
+    .option("--no-git", "Skip git scanning")
+    .option("--hours <duration>", "Target hours per day (default: 8h)")
+    .option("--prompt", "Include full LLM system prompt (pastable into any LLM)")
+    .option("--copy", "Copy output to clipboard")
+    .action(
+      async (
+        from?: string,
+        to?: string,
+        opts: {
+          repo?: string[];
+          noGit?: boolean;
+          hours?: string;
+          prompt?: boolean;
+          copy?: boolean;
+        } = {},
+      ) => {
+        await showEvidence(from, to, opts);
       },
     );
 
