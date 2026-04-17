@@ -236,6 +236,37 @@ export async function getBoards(config: Config, projectKey: string): Promise<Jir
   return all;
 }
 
+export interface ChangelogItem {
+  field: string;
+  fromString: string | null;
+  toString: string | null;
+}
+
+export interface ChangelogEntry {
+  created: string;
+  items: ChangelogItem[];
+}
+
+export async function getIssueChangelog(
+  config: Config,
+  key: string
+): Promise<ChangelogEntry[]> {
+  const all: ChangelogEntry[] = [];
+  let startAt = 0;
+
+  while (true) {
+    const res = await req<{ values: ChangelogEntry[]; isLast?: boolean; maxResults: number }>(
+      config, "GET",
+      `/rest/api/3/issue/${key}/changelog?maxResults=100&startAt=${startAt}`
+    );
+    all.push(...res.values);
+    if (res.isLast !== false || res.values.length === 0) break;
+    startAt += res.values.length;
+  }
+
+  return all;
+}
+
 export async function getBoardSprints(
   config: Config,
   boardId: number,

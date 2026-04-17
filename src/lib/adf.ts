@@ -111,6 +111,29 @@ function listItemToMarkdown(node: AdfNode, depth: number, index: number): string
 }
 
 /**
+ * Extracts plain text from an ADF document (no formatting).
+ * Useful for generating concise snippets.
+ */
+export function adfToPlainText(doc: AdfDoc | null | undefined): string {
+  if (!doc) return "";
+  return extractText(doc.content ?? []).replace(/\s+/g, " ").trim();
+}
+
+function extractText(nodes: AdfNode[]): string {
+  let text = "";
+  for (const node of nodes) {
+    if (node.type === "text") {
+      text += node.text ?? "";
+    } else if (node.type === "hardBreak") {
+      text += " ";
+    } else if (node.content) {
+      text += extractText(node.content) + " ";
+    }
+  }
+  return text;
+}
+
+/**
  * Converts a plain Markdown string to a minimal ADF document.
  * Preserves paragraph breaks; enough for round-tripping description text.
  */

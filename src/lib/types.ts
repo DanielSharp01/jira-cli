@@ -15,6 +15,9 @@ export interface Config {
   jiraPat: string;
   tempoPat: string;
   tableWidths?: TableWidths;
+  scanDirs?: Array<{ path: string; enabled: boolean }>;
+  googleClientId?: string;
+  googleClientSecret?: string;
 }
 
 export interface JiraUser {
