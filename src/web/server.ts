@@ -1,12 +1,45 @@
 import type { Config, JiraIssue } from "../lib/types.ts";
-import { getWorklogsForRange, getWorkingDays, createWorklog, deleteWorklog } from "../lib/tempo.ts";
-import { getIssueKeysByIds, getIssueIdsByKeys, searchIssues, getIssue, getTransitions, applyTransition, addComment } from "../lib/jira.ts";
+import {
+  getWorklogsForRange,
+  getWorkingDays,
+  createWorklog,
+  deleteWorklog,
+} from "../lib/tempo.ts";
+import {
+  getIssueKeysByIds,
+  getIssueIdsByKeys,
+  searchIssues,
+  getIssue,
+  getTransitions,
+  applyTransition,
+  addComment,
+} from "../lib/jira.ts";
 import type { AdfDoc } from "../lib/types.ts";
-import { gatherAllEvidence, gatherHistoricalPatterns, discoverGitRepos } from "../lib/evidence.ts";
+import {
+  gatherAllEvidence,
+  gatherHistoricalPatterns,
+  discoverGitRepos,
+} from "../lib/evidence.ts";
 import { generateSuggestions } from "../lib/suggest.ts";
-import { trackDescription, getAllPreferredDescriptions, deleteDescriptionPref, clearAllDescriptionPrefs, trackSuggestionFeedback, getScanDirs, addScanDirDb, removeScanDirDb, toggleScanDirDb, migrateScanDirsToDb } from "../lib/db.ts";
+import { getAIInfo } from "../lib/ai.ts";
+import {
+  trackDescription,
+  getAllPreferredDescriptions,
+  deleteDescriptionPref,
+  clearAllDescriptionPrefs,
+  trackSuggestionFeedback,
+  getScanDirs,
+  addScanDirDb,
+  removeScanDirDb,
+  toggleScanDirDb,
+  migrateScanDirsToDb,
+} from "../lib/db.ts";
 import type { SuggestionFeedbackEntry } from "../lib/db.ts";
-import { buildGoogleAuthUrl, exchangeGoogleCode, isGoogleConnected } from "../lib/google.ts";
+import {
+  buildGoogleAuthUrl,
+  exchangeGoogleCode,
+  isGoogleConnected,
+} from "../lib/google.ts";
 import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve, dirname } from "node:path";
@@ -32,25 +65,38 @@ function errorResponse(err: unknown, status = 500): Response {
 }
 
 function escHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 export function startServer(opts: ServerOpts): { port: number } {
-  const { config, defaultFrom, defaultTo, repoPaths, targetSecondsPerDay } = opts;
+  const { config, defaultFrom, defaultTo, repoPaths, targetSecondsPerDay } =
+    opts;
 
   // Migrate scan dirs from config.json to database (one-time)
   try {
-    if (config.scanDirs && config.scanDirs.length > 0 && getScanDirs().length === 0) {
+    if (
+      config.scanDirs &&
+      config.scanDirs.length > 0 &&
+      getScanDirs().length === 0
+    ) {
       migrateScanDirsToDb(config.scanDirs);
     }
-  } catch { /* migration is best-effort */ }
+  } catch {
+    /* migration is best-effort */
+  }
 
   // Helper to get fresh repo paths from DB scan dirs
   async function getFreshRepoPaths(): Promise<string[]> {
     try {
       const dbDirs = getScanDirs();
-      const enabledDirs = dbDirs.filter(d => d.enabled).map(d => d.path);
-      return enabledDirs.length > 0 ? await discoverGitRepos([], enabledDirs) : repoPaths;
+      const enabledDirs = dbDirs.filter((d) => d.enabled).map((d) => d.path);
+      return enabledDirs.length > 0
+        ? await discoverGitRepos([], enabledDirs)
+        : repoPaths;
     } catch {
       return repoPaths;
     }
@@ -72,12 +118,27 @@ export function startServer(opts: ServerOpts): { port: number } {
         try {
           const htmlPath = `${import.meta.dir}/index.html`;
           let html = await Bun.file(htmlPath).text();
-          const dbScanDirs = (() => { try { return getScanDirs(); } catch { return config.scanDirs ?? []; } })();
+          const dbScanDirs = (() => {
+            try {
+              return getScanDirs();
+            } catch {
+              return config.scanDirs ?? [];
+            }
+          })();
+          const aiInfo = (() => {
+            try {
+              return getAIInfo();
+            } catch {
+              return { provider: "unknown", model: "unknown" };
+            }
+          })();
           html = html.replace(
             "/*__SERVER_CONFIG__*/",
-            `window.__CONFIG__ = ${JSON.stringify({ from: defaultFrom, to: defaultTo, targetSecondsPerDay, scanDirs: dbScanDirs })};`
+            `window.__CONFIG__ = ${JSON.stringify({ from: defaultFrom, to: defaultTo, targetSecondsPerDay, scanDirs: dbScanDirs, aiInfo })};`,
           );
-          return new Response(html, { headers: { "Content-Type": "text/html" } });
+          return new Response(html, {
+            headers: { "Content-Type": "text/html" },
+          });
         } catch (err) {
           return errorResponse(err);
         }
@@ -91,7 +152,7 @@ export function startServer(opts: ServerOpts): { port: number } {
 
         try {
           const worklogs = await getWorklogsForRange(config, from, to);
-          const issueIds = [...new Set(worklogs.map(w => w.issue.id))];
+          const issueIds = [...new Set(worklogs.map((w) => w.issue.id))];
           const keyMap = await getIssueKeysByIds(config, issueIds);
 
           // Fetch issue summaries
@@ -99,13 +160,19 @@ export function startServer(opts: ServerOpts): { port: number } {
           const summaryMap = new Map<string, string>();
           if (uniqueKeys.length > 0) {
             try {
-              const quoted = uniqueKeys.map(k => `"${k}"`).join(",");
-              const issues = await searchIssues(config, `key in (${quoted})`, uniqueKeys.length);
+              const quoted = uniqueKeys.map((k) => `"${k}"`).join(",");
+              const issues = await searchIssues(
+                config,
+                `key in (${quoted})`,
+                uniqueKeys.length,
+              );
               for (const i of issues) summaryMap.set(i.key, i.fields.summary);
-            } catch { /* summaries are optional */ }
+            } catch {
+              /* summaries are optional */
+            }
           }
 
-          const enriched = worklogs.map(w => {
+          const enriched = worklogs.map((w) => {
             const issueKey = keyMap.get(w.issue.id) ?? String(w.issue.id);
             return {
               tempoWorklogId: w.tempoWorklogId,
@@ -144,7 +211,11 @@ export function startServer(opts: ServerOpts): { port: number } {
         const q = url.searchParams.get("q")?.trim();
         if (!q || q.length < 2) return jsonResponse({ issues: [] });
 
-        const fmt = (i: JiraIssue) => ({ key: i.key, id: i.id, summary: i.fields.summary });
+        const fmt = (i: JiraIssue) => ({
+          key: i.key,
+          id: i.id,
+          summary: i.fields.summary,
+        });
 
         const upper = q.toUpperCase();
         const escaped = q.replace(/"/g, '\\"');
@@ -159,13 +230,17 @@ export function startServer(opts: ServerOpts): { port: number } {
 
         if (/^[A-Z][A-Z0-9]+-\d+/.test(upper)) {
           const prefix = upper.match(/^([A-Z][A-Z0-9]+-\d+)/)![1]!;
-          queries.push(`key >= "${prefix}" AND key <= "${prefix}999" ORDER BY key ASC`);
+          queries.push(
+            `key >= "${prefix}" AND key <= "${prefix}999" ORDER BY key ASC`,
+          );
         }
 
         if (/^[A-Z][A-Z0-9]+-?$/.test(upper)) {
           const proj = upper.replace(/-$/, "");
           // User's own issues in project first, then all project issues
-          queries.push(`project = "${proj}" AND assignee = currentUser() ORDER BY updated DESC`);
+          queries.push(
+            `project = "${proj}" AND assignee = currentUser() ORDER BY updated DESC`,
+          );
           queries.push(`project = "${proj}" ORDER BY updated DESC`);
         }
 
@@ -181,7 +256,9 @@ export function startServer(opts: ServerOpts): { port: number } {
         const results: Array<{ key: string; id: string; summary: string }> = [];
 
         const settled = await Promise.allSettled(
-          [...new Set(queries)].map(jql => searchIssues(config, jql, MAX).catch(() => [] as JiraIssue[]))
+          [...new Set(queries)].map((jql) =>
+            searchIssues(config, jql, MAX).catch(() => [] as JiraIssue[]),
+          ),
         );
 
         for (const outcome of settled) {
@@ -205,16 +282,30 @@ export function startServer(opts: ServerOpts): { port: number } {
         const to = url.searchParams.get("to");
         try {
           const [sprintIssues, recentIssues] = await Promise.all([
-            searchIssues(config, `assignee = currentUser() AND sprint in openSprints() ORDER BY updated DESC`, 50).catch(() => [] as JiraIssue[]),
+            searchIssues(
+              config,
+              `assignee = currentUser() AND sprint in openSprints() ORDER BY updated DESC`,
+              50,
+            ).catch(() => [] as JiraIssue[]),
             from && to
-              ? searchIssues(config, `assignee = currentUser() AND status changed DURING ("${from}", "${to}") ORDER BY updated DESC`, 30).catch(() => [] as JiraIssue[])
+              ? searchIssues(
+                  config,
+                  `assignee = currentUser() AND status changed DURING ("${from}", "${to}") ORDER BY updated DESC`,
+                  30,
+                ).catch(() => [] as JiraIssue[])
               : Promise.resolve([] as JiraIssue[]),
           ]);
 
-          const fmt = (i: JiraIssue) => ({ key: i.key, summary: i.fields.summary, status: i.fields.status?.name ?? "" });
+          const fmt = (i: JiraIssue) => ({
+            key: i.key,
+            summary: i.fields.summary,
+            status: i.fields.status?.name ?? "",
+          });
           const sprint = sprintIssues.map(fmt);
-          const sprintKeys = new Set(sprint.map(i => i.key));
-          const recent = recentIssues.filter(i => !sprintKeys.has(i.key)).map(fmt);
+          const sprintKeys = new Set(sprint.map((i) => i.key));
+          const recent = recentIssues
+            .filter((i) => !sprintKeys.has(i.key))
+            .map(fmt);
 
           return jsonResponse({ sprint, recent });
         } catch (err) {
@@ -225,7 +316,7 @@ export function startServer(opts: ServerOpts): { port: number } {
       // POST /api/worklog
       if (path === "/api/worklog" && req.method === "POST") {
         try {
-          const body = await req.json() as {
+          const body = (await req.json()) as {
             issueKey: string;
             timeSpentSeconds: number;
             startDate: string;
@@ -235,7 +326,11 @@ export function startServer(opts: ServerOpts): { port: number } {
 
           const idMap = await getIssueIdsByKeys(config, [body.issueKey]);
           const issueId = idMap.get(body.issueKey);
-          if (!issueId) return errorResponse(`Could not resolve issue: ${body.issueKey}`, 400);
+          if (!issueId)
+            return errorResponse(
+              `Could not resolve issue: ${body.issueKey}`,
+              400,
+            );
 
           const worklog = await createWorklog(config, {
             issueId,
@@ -245,7 +340,11 @@ export function startServer(opts: ServerOpts): { port: number } {
             description: body.description,
           });
 
-          try { trackDescription(body.issueKey, body.description); } catch { /* db is optional */ }
+          try {
+            trackDescription(body.issueKey, body.description);
+          } catch {
+            /* db is optional */
+          }
 
           return jsonResponse({
             tempoWorklogId: worklog.tempoWorklogId,
@@ -277,27 +376,45 @@ export function startServer(opts: ServerOpts): { port: number } {
       // POST /api/worklogs/batch
       if (path === "/api/worklogs/batch" && req.method === "POST") {
         try {
-          const body = await req.json() as {
-            create: Array<{ issueKey: string; timeSpentSeconds: number; startDate: string; startTime: string; description: string }>;
+          const body = (await req.json()) as {
+            create: Array<{
+              issueKey: string;
+              timeSpentSeconds: number;
+              startDate: string;
+              startTime: string;
+              description: string;
+            }>;
             delete: number[];
           };
 
           // Validate all issue keys BEFORE any deletes (prevent data loss on partial failure)
-          const allKeys = [...new Set(body.create.map(c => c.issueKey))];
-          const idMap = allKeys.length > 0 ? await getIssueIdsByKeys(config, allKeys) : new Map<string, number>();
-          const unresolved = allKeys.filter(k => !idMap.get(k));
-          if (unresolved.length > 0) return errorResponse(`Could not resolve issues: ${unresolved.join(", ")}`, 400);
+          const allKeys = [...new Set(body.create.map((c) => c.issueKey))];
+          const idMap =
+            allKeys.length > 0
+              ? await getIssueIdsByKeys(config, allKeys)
+              : new Map<string, number>();
+          const unresolved = allKeys.filter((k) => !idMap.get(k));
+          if (unresolved.length > 0)
+            return errorResponse(
+              `Could not resolve issues: ${unresolved.join(", ")}`,
+              400,
+            );
 
           // Delete (only after validation passes)
           const deleted: number[] = [];
           const deleteFailed: Array<{ id: number; error: string }> = [];
           for (const id of body.delete) {
-            try { await deleteWorklog(config, id); deleted.push(id); }
-            catch (err) { deleteFailed.push({ id, error: String(err) }); }
+            try {
+              await deleteWorklog(config, id);
+              deleted.push(id);
+            } catch (err) {
+              deleteFailed.push({ id, error: String(err) });
+            }
           }
 
           // Create
-          const created: Array<{ tempoWorklogId: number; issueKey: string }> = [];
+          const created: Array<{ tempoWorklogId: number; issueKey: string }> =
+            [];
           const createFailed: Array<{ issueKey: string; error: string }> = [];
           for (const entry of body.create) {
             try {
@@ -309,19 +426,33 @@ export function startServer(opts: ServerOpts): { port: number } {
                 startTime: entry.startTime,
                 description: entry.description,
               });
-              created.push({ tempoWorklogId: wl.tempoWorklogId, issueKey: entry.issueKey });
-              try { trackDescription(entry.issueKey, entry.description); } catch { /* db is optional */ }
+              created.push({
+                tempoWorklogId: wl.tempoWorklogId,
+                issueKey: entry.issueKey,
+              });
+              try {
+                trackDescription(entry.issueKey, entry.description);
+              } catch {
+                /* db is optional */
+              }
             } catch (err) {
-              createFailed.push({ issueKey: entry.issueKey, error: String(err) });
+              createFailed.push({
+                issueKey: entry.issueKey,
+                error: String(err),
+              });
             }
           }
 
-          const hasFailures = deleteFailed.length > 0 || createFailed.length > 0;
-          return jsonResponse({
-            deleted: deleted.length,
-            created: created.length,
-            ...(hasFailures ? { deleteFailed, createFailed } : {}),
-          }, hasFailures ? 207 : 200);
+          const hasFailures =
+            deleteFailed.length > 0 || createFailed.length > 0;
+          return jsonResponse(
+            {
+              deleted: deleted.length,
+              created: created.length,
+              ...(hasFailures ? { deleteFailed, createFailed } : {}),
+            },
+            hasFailures ? 207 : 200,
+          );
         } catch (err) {
           return errorResponse(err);
         }
@@ -340,7 +471,10 @@ export function startServer(opts: ServerOpts): { port: number } {
       // DELETE /api/preferences
       if (path === "/api/preferences" && req.method === "DELETE") {
         try {
-          const body = await req.json() as { issueKey?: string; description?: string };
+          const body = (await req.json()) as {
+            issueKey?: string;
+            description?: string;
+          };
           if (body.issueKey && body.description) {
             deleteDescriptionPref(body.issueKey, body.description);
           } else {
@@ -368,7 +502,7 @@ export function startServer(opts: ServerOpts): { port: number } {
       // POST /api/suggest (kept for backwards compat)
       if (path === "/api/suggest" && req.method === "POST") {
         try {
-          const body = await req.json() as {
+          const body = (await req.json()) as {
             from: string;
             to: string;
             targetHoursPerDay?: number;
@@ -376,10 +510,21 @@ export function startServer(opts: ServerOpts): { port: number } {
             instructions?: string;
           };
 
-          const targetHours = body.targetHoursPerDay ?? targetSecondsPerDay / 3600;
+          const targetHours =
+            body.targetHoursPerDay ?? targetSecondsPerDay / 3600;
           const freshPaths = await getFreshRepoPaths();
-          const evidence = await gatherAllEvidence(config, freshPaths, body.from, body.to);
-          const suggestions = await generateSuggestions(evidence, targetHours, body.model, body.instructions);
+          const evidence = await gatherAllEvidence(
+            config,
+            freshPaths,
+            body.from,
+            body.to,
+          );
+          const suggestions = await generateSuggestions(
+            evidence,
+            targetHours,
+            body.model,
+            body.instructions,
+          );
 
           return jsonResponse(suggestions);
         } catch (err) {
@@ -389,9 +534,15 @@ export function startServer(opts: ServerOpts): { port: number } {
 
       // POST /api/suggest-stream (SSE with progress updates)
       if (path === "/api/suggest-stream" && req.method === "POST") {
-        let body: { from: string; to: string; targetHoursPerDay?: number; model?: string; instructions?: string };
+        let body: {
+          from: string;
+          to: string;
+          targetHoursPerDay?: number;
+          model?: string;
+          instructions?: string;
+        };
         try {
-          body = await req.json() as typeof body;
+          body = (await req.json()) as typeof body;
         } catch {
           return errorResponse("Invalid JSON body", 400);
         }
@@ -400,15 +551,23 @@ export function startServer(opts: ServerOpts): { port: number } {
         const stream = new ReadableStream({
           async start(controller) {
             const send = (event: string, data: unknown) => {
-              controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+              controller.enqueue(
+                encoder.encode(
+                  `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+                ),
+              );
             };
 
             try {
-              const targetHours = body.targetHoursPerDay ?? targetSecondsPerDay / 3600;
+              const targetHours =
+                body.targetHoursPerDay ?? targetSecondsPerDay / 3600;
               const freshPaths = await getFreshRepoPaths();
 
               const evidence = await gatherAllEvidence(
-                config, freshPaths, body.from, body.to,
+                config,
+                freshPaths,
+                body.from,
+                body.to,
                 (phase, message) => send("progress", { phase, message }),
               );
 
@@ -423,8 +582,16 @@ export function startServer(opts: ServerOpts): { port: number } {
               };
               send("evidence", evidenceSummary);
 
-              send("progress", { phase: "llm", message: "Generating suggestions with AI..." });
-              const suggestions = await generateSuggestions(evidence, targetHours, body.model, body.instructions);
+              send("progress", {
+                phase: "llm",
+                message: "Generating suggestions with AI...",
+              });
+              const suggestions = await generateSuggestions(
+                evidence,
+                targetHours,
+                body.model,
+                body.instructions,
+              );
 
               send("result", suggestions);
             } catch (err) {
@@ -439,18 +606,24 @@ export function startServer(opts: ServerOpts): { port: number } {
           headers: {
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
+            Connection: "keep-alive",
           },
         });
       }
 
       // GET /api/issue/:key
-      if (path.match(/^\/api\/issue\/[A-Z][A-Z0-9]+-\d+$/) && req.method === "GET") {
+      if (
+        path.match(/^\/api\/issue\/[A-Z][A-Z0-9]+-\d+$/) &&
+        req.method === "GET"
+      ) {
         const key = path.split("/")[3]!;
         try {
           const issue = await getIssue(config, key, true);
           const sprint = issue.fields.customfield_10020;
-          const sprintName = Array.isArray(sprint) && sprint.length > 0 ? sprint[sprint.length - 1]?.name : null;
+          const sprintName =
+            Array.isArray(sprint) && sprint.length > 0
+              ? sprint[sprint.length - 1]?.name
+              : null;
           return jsonResponse({
             key: issue.key,
             summary: issue.fields.summary,
@@ -464,11 +637,13 @@ export function startServer(opts: ServerOpts): { port: number } {
             created: issue.fields.created?.slice(0, 10),
             updated: issue.fields.updated?.slice(0, 10),
             description: issue.fields.description,
-            comments: (issue.fields.comment?.comments ?? []).slice(-10).map(c => ({
-              author: c.author.displayName,
-              created: c.created.slice(0, 10),
-              body: c.body,
-            })),
+            comments: (issue.fields.comment?.comments ?? [])
+              .slice(-10)
+              .map((c) => ({
+                author: c.author.displayName,
+                created: c.created.slice(0, 10),
+                body: c.body,
+              })),
           });
         } catch (err) {
           return errorResponse(err);
@@ -476,21 +651,29 @@ export function startServer(opts: ServerOpts): { port: number } {
       }
 
       // GET /api/issue/:key/transitions
-      if (path.match(/^\/api\/issue\/[A-Z][A-Z0-9]+-\d+\/transitions$/) && req.method === "GET") {
+      if (
+        path.match(/^\/api\/issue\/[A-Z][A-Z0-9]+-\d+\/transitions$/) &&
+        req.method === "GET"
+      ) {
         const key = path.split("/")[3]!;
         try {
           const transitions = await getTransitions(config, key);
-          return jsonResponse({ transitions: transitions.map(t => ({ id: t.id, name: t.name })) });
+          return jsonResponse({
+            transitions: transitions.map((t) => ({ id: t.id, name: t.name })),
+          });
         } catch (err) {
           return errorResponse(err);
         }
       }
 
       // POST /api/issue/:key/transition
-      if (path.match(/^\/api\/issue\/[A-Z][A-Z0-9]+-\d+\/transition$/) && req.method === "POST") {
+      if (
+        path.match(/^\/api\/issue\/[A-Z][A-Z0-9]+-\d+\/transition$/) &&
+        req.method === "POST"
+      ) {
         const key = path.split("/")[3]!;
         try {
-          const body = await req.json() as { transitionId: string };
+          const body = (await req.json()) as { transitionId: string };
           await applyTransition(config, key, body.transitionId);
           return jsonResponse({ ok: true });
         } catch (err) {
@@ -499,14 +682,22 @@ export function startServer(opts: ServerOpts): { port: number } {
       }
 
       // POST /api/issue/:key/comment
-      if (path.match(/^\/api\/issue\/[A-Z][A-Z0-9]+-\d+\/comment$/) && req.method === "POST") {
+      if (
+        path.match(/^\/api\/issue\/[A-Z][A-Z0-9]+-\d+\/comment$/) &&
+        req.method === "POST"
+      ) {
         const key = path.split("/")[3]!;
         try {
-          const body = await req.json() as { text: string };
+          const body = (await req.json()) as { text: string };
           const adfBody: AdfDoc = {
             version: 1,
             type: "doc",
-            content: [{ type: "paragraph", content: [{ type: "text", text: body.text }] }],
+            content: [
+              {
+                type: "paragraph",
+                content: [{ type: "text", text: body.text }],
+              },
+            ],
           };
           await addComment(config, key, adfBody);
           return jsonResponse({ ok: true });
@@ -527,7 +718,7 @@ export function startServer(opts: ServerOpts): { port: number } {
       // POST /api/scan-dirs — add a directory
       if (path === "/api/scan-dirs" && req.method === "POST") {
         try {
-          const body = await req.json() as { path: string };
+          const body = (await req.json()) as { path: string };
           addScanDirDb(body.path);
           return jsonResponse({ ok: true, scanDirs: getScanDirs() });
         } catch (err) {
@@ -538,7 +729,7 @@ export function startServer(opts: ServerOpts): { port: number } {
       // DELETE /api/scan-dirs — remove a directory
       if (path === "/api/scan-dirs" && req.method === "DELETE") {
         try {
-          const body = await req.json() as { path: string };
+          const body = (await req.json()) as { path: string };
           removeScanDirDb(body.path);
           return jsonResponse({ ok: true, scanDirs: getScanDirs() });
         } catch (err) {
@@ -549,7 +740,7 @@ export function startServer(opts: ServerOpts): { port: number } {
       // PATCH /api/scan-dirs — toggle enabled
       if (path === "/api/scan-dirs" && req.method === "PATCH") {
         try {
-          const body = await req.json() as { path: string; enabled: boolean };
+          const body = (await req.json()) as { path: string; enabled: boolean };
           toggleScanDirDb(body.path, body.enabled);
           return jsonResponse({ ok: true, scanDirs: getScanDirs() });
         } catch (err) {
@@ -564,10 +755,19 @@ export function startServer(opts: ServerOpts): { port: number } {
           const resolved = resolve(requestedPath);
           const entries = readdirSync(resolved, { withFileTypes: true });
           const dirs = entries
-            .filter(e => e.isDirectory() && !e.name.startsWith(".") && e.name !== "node_modules")
-            .map(e => e.name)
+            .filter(
+              (e) =>
+                e.isDirectory() &&
+                !e.name.startsWith(".") &&
+                e.name !== "node_modules",
+            )
+            .map((e) => e.name)
             .sort((a, b) => a.localeCompare(b));
-          return jsonResponse({ current: resolved, parent: dirname(resolved), dirs });
+          return jsonResponse({
+            current: resolved,
+            parent: dirname(resolved),
+            dirs,
+          });
         } catch (err) {
           return errorResponse(err);
         }
@@ -575,8 +775,12 @@ export function startServer(opts: ServerOpts): { port: number } {
 
       // GET /api/google/status
       if (path === "/api/google/status" && req.method === "GET") {
-        const hasClientId = !!(config.googleClientId || process.env.GOOGLE_CLIENT_ID);
-        const hasClientSecret = !!(config.googleClientSecret || process.env.GOOGLE_CLIENT_SECRET);
+        const hasClientId = !!(
+          config.googleClientId || process.env.GOOGLE_CLIENT_ID
+        );
+        const hasClientSecret = !!(
+          config.googleClientSecret || process.env.GOOGLE_CLIENT_SECRET
+        );
         return jsonResponse({
           connected: isGoogleConnected(),
           configured: hasClientId && hasClientSecret,
@@ -600,36 +804,50 @@ export function startServer(opts: ServerOpts): { port: number } {
         const error = url.searchParams.get("error");
 
         if (error) {
-          return new Response(`<html><body><h2>Authorization failed</h2><p>${escHtml(error)}</p><p>You can close this tab.</p></body></html>`, {
-            headers: { "Content-Type": "text/html" },
-          });
+          return new Response(
+            `<html><body><h2>Authorization failed</h2><p>${escHtml(error)}</p><p>You can close this tab.</p></body></html>`,
+            {
+              headers: { "Content-Type": "text/html" },
+            },
+          );
         }
 
         if (!code) {
-          return new Response("<html><body><h2>Missing authorization code</h2></body></html>", {
-            status: 400,
-            headers: { "Content-Type": "text/html" },
-          });
+          return new Response(
+            "<html><body><h2>Missing authorization code</h2></body></html>",
+            {
+              status: 400,
+              headers: { "Content-Type": "text/html" },
+            },
+          );
         }
 
         try {
           const redirectUri = `http://localhost:${actualPort}/oauth/google/callback`;
           await exchangeGoogleCode(config, code, redirectUri);
-          return new Response(`<html><body><h2>Google Workspace connected!</h2><p>You can close this tab and return to the Tempo UI.</p><script>window.close()</script></body></html>`, {
-            headers: { "Content-Type": "text/html" },
-          });
+          return new Response(
+            `<html><body><h2>Google Workspace connected!</h2><p>You can close this tab and return to the Tempo UI.</p><script>window.close()</script></body></html>`,
+            {
+              headers: { "Content-Type": "text/html" },
+            },
+          );
         } catch (err) {
-          return new Response(`<html><body><h2>Authorization failed</h2><p>${escHtml(String(err))}</p></body></html>`, {
-            status: 500,
-            headers: { "Content-Type": "text/html" },
-          });
+          return new Response(
+            `<html><body><h2>Authorization failed</h2><p>${escHtml(String(err))}</p></body></html>`,
+            {
+              status: 500,
+              headers: { "Content-Type": "text/html" },
+            },
+          );
         }
       }
 
       // POST /api/suggest-feedback
       if (path === "/api/suggest-feedback" && req.method === "POST") {
         try {
-          const body = await req.json() as { entries: SuggestionFeedbackEntry[] };
+          const body = (await req.json()) as {
+            entries: SuggestionFeedbackEntry[];
+          };
           for (const entry of body.entries) {
             trackSuggestionFeedback(entry);
           }
